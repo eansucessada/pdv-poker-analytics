@@ -1,33 +1,37 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { DatabaseService } from './services/dbService';
+import React, { useState, useMemo, useEffect } from "react";
+import { supabase } from "./services/supabaseClient";
 
 // Tipos
-import type { FilterState, MetricFilter } from './types';
+import type { FilterState, MetricFilter } from "./types";
 
 // Componentes
-import CSVUploader from './components/CSVUploader/CSVUploader';
+import CSVUploader from "./components/CSVUploader/CSVUploader";
 
 // ⚠️ Import direto dos arquivos para evitar erro de "barrel export"
-import DeepDiveView from './components/deepdive/DeepDiveView';
-import GradeView from './components/grade/GradeView';
+import DeepDiveView from "./components/deepdive/DeepDiveView";
+import GradeView from "./components/grade/GradeView";
 
-const INITIAL_METRIC_FILTER: MetricFilter = { operator: 'none', val1: '', val2: '' };
+const INITIAL_METRIC_FILTER: MetricFilter = { operator: "none", val1: "", val2: "" };
 
 const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'deep-dive' | 'grade'>('deep-dive');
+  const [activeTab, setActiveTab] = useState<"deep-dive" | "grade">("deep-dive");
   const [dataVersion, setDataVersion] = useState(0);
 
+  // Listas vindas do banco (tabela agregada public.tournaments)
+  const [allRedesDb, setAllRedesDb] = useState<string[]>([]);
+  const [uniqueVelocidadesDb, setUniqueVelocidadesDb] = useState<string[]>([]);
+
   useEffect(() => {
-    console.log('PDV Poker Analytics: Local Hosting Mode Active');
+    console.log("PDV Poker Analytics: Local Hosting Mode Active");
   }, []);
 
   // ✅ Ajuste: se seu FilterState usa rede/velocidade como string[],
   // então aqui precisa ser array, não string.
   const [filters] = useState<FilterState>({
-    search: '',
-    rede: [],            // ✅ era ''
-    velocidade: [],      // ✅ era ''
-    bandeiras: '',
+    search: "",
+    rede: [], // ✅ era ''
+    velocidade: [], // ✅ era ''
+    bandeiras: "",
     metrics: {
       stakeMedia: { ...INITIAL_METRIC_FILTER },
       qtd: { ...INITIAL_METRIC_FILTER },
@@ -38,8 +42,54 @@ const App: React.FC = () => {
     },
   });
 
-  const allRedes = useMemo(() => DatabaseService.getUniqueValues('rede'), [dataVersion]);
-  const uniqueVelocidades = useMemo(() => DatabaseService.getUniqueValues('velocidade'), [dataVersion]);
+  /**
+   * Busca as listas únicas para filtros no banco:
+   * - redes: distinct rede
+   * - velocidades: distinct velocidade (se não existir em tournaments, vira [])
+   *
+   * Observação: Sua tabela agregada `tournaments` hoje tem `rede` e `nome`.
+   * Ela NÃO tem "velocidade" no schema que montamos (a não ser que você tenha adicionado).
+   * Então:
+   * - redes vai funcionar
+   * - velocidades só vai funcionar se existir a coluna `velocidade` em `tournaments`
+   */
+  useEffect(() => {
+    const loadFilterOptions = async () => {
+      // Teste simples para validar conexão e sessão
+      const { data: sessionData } = await supabase.auth.getSession();
+      console.log("Supabase session:", sessionData?.session ? "OK" : "none");
+
+      // 1) Redes
+      const redesResp = await supabase.from("tournaments").select("rede");
+      if (!redesResp.error) {
+        const redes = Array.from(new Set((redesResp.data ?? []).map((r: any) => r.rede).filter(Boolean)));
+        redes.sort((a, b) => a.localeCompare(b));
+        setAllRedesDb(redes);
+      } else {
+        console.error("Erro carregando redes:", redesResp.error.message);
+        setAllRedesDb([]);
+      }
+
+      // 2) Velocidades (pode não existir na tabela agregada)
+      const velResp = await supabase.from("tournaments").select("velocidade");
+      if (!velResp.error) {
+        const vels = Array.from(new Set((velResp.data ?? []).map((r: any) => r.velocidade).filter(Boolean)));
+        vels.sort((a, b) => a.localeCompare(b));
+        setUniqueVelocidadesDb(vels);
+      } else {
+        // Se a coluna não existir, o Supabase retorna erro.
+        // Não vamos quebrar a UI por isso.
+        console.warn("Velocidade não disponível em tournaments (ok por enquanto).", velResp.error.message);
+        setUniqueVelocidadesDb([]);
+      }
+    };
+
+    void loadFilterOptions();
+  }, [dataVersion]);
+
+  // Mantém as props do GradeView como antes
+  const allRedes = useMemo(() => allRedesDb, [allRedesDb]);
+  const uniqueVelocidades = useMemo(() => uniqueVelocidadesDb, [uniqueVelocidadesDb]);
 
   return (
     <div className="min-h-screen bg-slate-950 p-4 md:p-8">
@@ -70,41 +120,36 @@ const App: React.FC = () => {
         <div className="flex flex-col md:flex-row items-center gap-6">
           <nav className="bg-slate-900/50 p-1.5 rounded-2xl border border-slate-800 flex gap-1">
             <button
-              onClick={() => setActiveTab('deep-dive')}
+              onClick={() => setActiveTab("deep-dive")}
               className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                activeTab === 'deep-dive' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'
+                activeTab === "deep-dive" ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-white"
               }`}
             >
               Análise Profunda
             </button>
 
             <button
-              onClick={() => setActiveTab('grade')}
+              onClick={() => setActiveTab("grade")}
               className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                activeTab === 'grade' ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'
+                activeTab === "grade" ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-white"
               }`}
             >
               Grade
             </button>
           </nav>
 
+          {/* Por enquanto mantemos o CSVUploader (local), mas ele já serve para forçar refresh */}
           <CSVUploader onUploadComplete={() => setDataVersion((v) => v + 1)} />
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto">
-        <div className={activeTab === 'deep-dive' ? 'block' : 'hidden'}>
-          {/* ✅ Agora o DeepDiveView importado é o componente correto */}
+        <div className={activeTab === "deep-dive" ? "block" : "hidden"}>
           <DeepDiveView dataVersion={dataVersion} />
         </div>
 
-        <div className={activeTab === 'grade' ? 'block' : 'hidden'}>
-          <GradeView
-            dataVersion={dataVersion}
-            filters={filters}
-            allRedes={allRedes}
-            uniqueVelocidades={uniqueVelocidades}
-          />
+        <div className={activeTab === "grade" ? "block" : "hidden"}>
+          <GradeView dataVersion={dataVersion} filters={filters} allRedes={allRedes} uniqueVelocidades={uniqueVelocidades} />
         </div>
       </main>
 

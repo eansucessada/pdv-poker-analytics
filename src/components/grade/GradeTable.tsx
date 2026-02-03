@@ -44,27 +44,28 @@ const GradeTable: React.FC<Props> = ({
             </tr>
           </thead>
 
-          <tbody className="divide-y divide-slate-800/50">
-            {gradeData.map(item => (
-              <GradeRow
-                key={item.tournamentKey}
-                item={item}
-                onManualTimeCommit={onManualTimeCommit}
-                getRedeColor={getRedeColor}
-                isPassed={grindMode && (item.horarioManual || item.horario || '00:00') < currentTimeStr}
-                isManualEntry={manuallyAddedKeys.includes(item.tournamentKey)}
-                onRemove={onRemove}
-              />
-            ))}
+<tbody className="divide-y divide-slate-800/50">
+  {(gradeData ?? []).map((item) => (
+    <GradeRow
+      key={item.tournamentKey}
+      item={item}
+      onManualTimeCommit={onManualTimeCommit}
+      getRedeColor={getRedeColor}
+      isPassed={grindMode && (item.horarioManual || item.horario || '00:00') < currentTimeStr}
+      isManualEntry={(manuallyAddedKeys ?? []).includes(item.tournamentKey)}
+      onRemove={onRemove}
+    />
+  ))}
 
-            {gradeData.length === 0 && (
-              <tr>
-                <td colSpan={10} className="px-8 py-20 text-center text-slate-700 font-black uppercase tracking-[0.3em] text-[10px]">
-                  Grade Vazia
-                </td>
-              </tr>
-            )}
-          </tbody>
+  {(gradeData ?? []).length === 0 && (
+    <tr>
+      <td colSpan={10} className="px-8 py-20 text-center text-slate-700 font-black uppercase tracking-[0.3em] text-[10px]">
+        Grade Vazia
+      </td>
+    </tr>
+  )}
+</tbody>
+
         </table>
       </div>
     </div>

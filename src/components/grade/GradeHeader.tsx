@@ -1,4 +1,5 @@
 // grade/GradeHeader.tsx
+import { supabase } from "../../services/supabaseClient";
 import React, { useRef, useState } from 'react';
 import { DAYS_OF_WEEK } from './GradeTable';
 import type { GradeSlot } from '../../types/grade';
@@ -62,6 +63,7 @@ const GradeHeader: React.FC<Props> = ({
   const volumeRef = useRef<HTMLDivElement>(null);
 
   return (
+    
     <div className="bg-slate-900/60 rounded-3xl border border-slate-800 p-2 px-4 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
       <div className="flex items-center gap-1.5 flex-wrap">
         {slots.map((slot, idx) => (
@@ -88,6 +90,18 @@ const GradeHeader: React.FC<Props> = ({
             )}
           </div>
         ))}
+<button
+  onClick={async () => {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: "nanato@gmail.com",
+      password: "nanato123123"
+    });
+    console.log("login", data, error);
+    alert(error ? error.message : "Logado!");
+  }}
+>
+  Testar Login
+</button>
 
         {slots.length < 8 && (
           <button

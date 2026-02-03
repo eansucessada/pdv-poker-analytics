@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { DatabaseService } from '../../services/dbService';
+import { supabase } from '../../services/supabaseClient';
 import type { TournamentRaw } from '../../types';
 import { makeTournamentKey } from '../../utils/tournamentKey';
 
@@ -14,10 +14,24 @@ const CONVERSION_RATES: Record<string, number> = {
   BRL: 0.18
 };
 
+const chunkArray = <T,>(arr: T[], size: number) => {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+};
+
+const extractHora = (dataStr: string): string | null => {
+  if (!dataStr) return null;
+  const m = dataStr.match(/\b([01]\d|2[0-3]):[0-5]\d\b/);
+  return m ? m[0] : null;
+};
+
+type PendingItem = TournamentRaw & { hora_str?: string | null };
+
 const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
-  const [pendingData, setPendingData] = useState<TournamentRaw[] | null>(null);
+  const [pendingData, setPendingData] = useState<PendingItem[] | null>(null);
   const [totalFilesSelected, setTotalFilesSelected] = useState(0);
   const [currentFileIndex, setCurrentFileIndex] = useState(0);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -82,7 +96,7 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
     setTotalFilesSelected(fileArray.length);
     setCurrentFileIndex(0);
 
-    const allParsedData: TournamentRaw[] = [];
+    const allParsedData: PendingItem[] = [];
 
     try {
       for (let i = 0; i < fileArray.length; i++) {
@@ -92,7 +106,6 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
         try {
           const text = await readFileAsText(file);
           const allLines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
-
           if (allLines.length < 2) continue;
 
           const firstLine = allLines[0];
@@ -118,6 +131,9 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
               continue;
             }
 
+            const dataStr = cols[4] || '';
+            const horaStr = extractHora(dataStr);
+
             let moeda = (cols[13] || 'USD').toUpperCase();
             let rate = CONVERSION_RATES[moeda] || 1.0;
 
@@ -127,7 +143,6 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
             let premioRegular = parsePokerFloat(cols[17]);
             let premioBounty = parsePokerFloat(cols[20]);
 
-            // Ajuste "Zodiac" (mantido como está no seu código)
             if (nomeTorneio.toLowerCase().includes('zodiac')) {
               const zodiacRate = 0.14;
               stakeBase *= zodiacRate;
@@ -143,17 +158,11 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
             const lucroLiquidoBase = resultadoBase - rakeBase;
 
             let roiIndividual = -100;
-            if (custoTotalBase > 0) {
-              roiIndividual = (lucroLiquidoBase / custoTotalBase) * 100;
-            }
+            if (custoTotalBase > 0) roiIndividual = (lucroLiquidoBase / custoTotalBase) * 100;
 
-            // Regra oficial do checkpoint: ITM NÃO vem do CSV
-            // (se hoje você está usando outra heurística, mantenho aqui como estava;
-            // depois a gente alinha para lucro_usd > 0 quando você quiser)
             const lucroUsd = lucroLiquidoBase * rate;
             const isItm = lucroUsd > 0;
 
-            // ✅ tournamentKey oficial do projeto: `${rede}::${nome}`
             const tournamentKey = makeTournamentKey(rede, nomeTorneio);
 
             allParsedData.push({
@@ -162,7 +171,7 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
               jogador,
               stake: stakeBase,
               rake: rakeBase,
-              data: cols[4] || '',
+              data: dataStr,
               participantes: parseInt((cols[5] || '').replace(/\D/g, ''), 10) || 0,
               velocidade: cols[9] || 'Normal',
               resultado_base: resultadoBase,
@@ -177,8 +186,9 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
               roi_individual: roiIndividual,
               is_itm: isItm,
               bandeiras,
-              tournamentKey
-            } as TournamentRaw);
+              tournamentKey,
+              hora_str: horaStr
+            } as PendingItem);
           }
         } catch (fileError) {
           console.error(`Erro ao ler o arquivo ${file.name}:`, fileError);
@@ -201,34 +211,130 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || files.length === 0) return;
-    processFiles(files);
+    void processFiles(files);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleAction = async (append: boolean) => {
-    if (!pendingData) return;
-    if (!append) DatabaseService.clearData();
-    const stats = await DatabaseService.insertRawData(pendingData);
+    if (!pendingData || pendingData.length === 0) return;
+
+    const { data: userRes, error: userErr } = await supabase.auth.getUser();
+    if (userErr || !userRes?.user?.id) {
+      alert('Você precisa estar logado para importar.');
+      return;
+    }
+    const user_id = userRes.user.id;
+
+    // ✅ SUBSTITUIR BASE: limpa agregado + raw do usuário e legado (user_id null)
+    if (!append) {
+      const { error: delAggUser } = await supabase.from('tournaments').delete().eq('user_id', user_id);
+      if (delAggUser) {
+        console.error('DELETE tournaments (user) ERROR:', delAggUser);
+        alert(`Erro ao limpar tournaments (user): ${delAggUser.message}`);
+        return;
+      }
+
+      const { error: delAggNull } = await supabase.from('tournaments').delete().is('user_id', null);
+      if (delAggNull) {
+        console.error('DELETE tournaments (null) ERROR:', delAggNull);
+        alert(`Erro ao limpar tournaments (null): ${delAggNull.message}`);
+        return;
+      }
+
+      const { error: delRawUser } = await supabase.from('tournaments_raw').delete().eq('user_id', user_id);
+      if (delRawUser) {
+        console.error('DELETE tournaments_raw (user) ERROR:', delRawUser);
+        alert(`Erro ao limpar tournaments_raw (user): ${delRawUser.message}`);
+        return;
+      }
+
+      const { error: delRawNull } = await supabase.from('tournaments_raw').delete().is('user_id', null);
+      if (delRawNull) {
+        console.error('DELETE tournaments_raw (null) ERROR:', delRawNull);
+        alert(`Erro ao limpar tournaments_raw (null): ${delRawNull.message}`);
+        return;
+      }
+    }
+
+    // 1) cria import
+    const { data: importRow, error: importErr } = await supabase
+      .from('imports')
+      .insert({ user_id, status: 'processing', original_filename: 'upload.csv' })
+      .select('id')
+      .single();
+
+    if (importErr || !importRow?.id) {
+      console.error('IMPORT ERROR:', importErr);
+      alert(`Erro ao criar import: ${importErr?.message || 'sem detalhes'}`);
+      return;
+    }
+
+    const import_id = importRow.id;
+
+    // 2) monta linhas do RAW (inclui hora_str)
+    const rows = pendingData.map((t) => ({
+      user_id,
+      import_id,
+      tournament_key: t.tournamentKey,
+
+      Rede: t.rede,
+      Jogador: t.jogador,
+      'ID do Jogo': t.id_do_jogo,
+      Stake: t.stake,
+      Data: t.data,
+      Participantes: t.participantes,
+      Rake: t.rake,
+      Velocidade: t.velocidade,
+      Resultado: t.resultado_base,
+      Bandeiras: t.bandeiras,
+      Moeda: t.moeda,
+      Nome: t.nome,
+      'Prêmio': t.premio,
+      'Prêmio de Recompensa': t.premio_recompensa,
+      'Reentradas/Recompras': t.reentradas,
+
+      hora_str: t.hora_str ?? null
+    }));
+
+    // 3) insere em lotes
+    const chunks = chunkArray(rows, 500);
+    for (const chunk of chunks) {
+      const { error } = await supabase.from('tournaments_raw').insert(chunk);
+      if (error) {
+        console.error('RAW INSERT ERROR:', error);
+        await supabase.from('imports').update({ status: 'error' }).eq('id', import_id);
+        alert(`Erro ao inserir tournaments_raw: ${error.message}`);
+        return;
+      }
+    }
+
+    // 4) consolida RAW -> tournaments
+    const { error: finalizeErr } = await supabase.rpc('finalize_import', {
+  p_import_id: import_id,
+  p_replace: !append
+});
+    if (finalizeErr) {
+      console.error('FINALIZE ERROR:', finalizeErr);
+      await supabase.from('imports').update({ status: 'error' }).eq('id', import_id);
+      alert(`Erro ao consolidar: ${finalizeErr.message}`);
+      return;
+    }
+
+    // 5) marca import como done
+    await supabase.from('imports').update({ status: 'done' }).eq('id', import_id);
 
     setPendingData(null);
     setShowOptions(false);
     onUploadComplete();
-
-    setSuccessMessage(`${stats.added} jogos importados com sucesso!`);
+    setSuccessMessage(`${rows.length} jogos importados com sucesso!`);
   };
 
   return (
     <div className="flex flex-col md:flex-row items-center gap-6 bg-slate-900/60 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-lg relative">
-      {/* ... (o resto do seu componente fica igual, sem mudanças) ... */}
       <div className="flex-1 text-center">
         <h3 className="text-lg font-black text-white mb-1 flex items-center justify-center gap-2 text-center">
           {isProcessing ? (
-            <svg
-              className="animate-spin h-5 w-5 text-blue-500"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
+            <svg className="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path
                 className="opacity-75"
@@ -246,20 +352,14 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
             </svg>
           ) : (
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
-              <path
-                fillRule="evenodd"
-                d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z"
-                clipRule="evenodd"
-              />
+              <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clipRule="evenodd" />
+              <path fillRule="evenodd" d="M6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
             </svg>
           )}
           Importação de Dados
         </h3>
-        <p
-          className={`text-xs font-black uppercase tracking-wider text-center ${
-            successMessage ? 'text-green-400 animate-pulse' : 'text-slate-500'
-          }`}
-        >
+
+        <p className={`text-xs font-black uppercase tracking-wider text-center ${successMessage ? 'text-green-400 animate-pulse' : 'text-slate-500'}`}>
           {isProcessing
             ? `Lendo arquivo ${currentFileIndex} de ${totalFilesSelected}...`
             : successMessage

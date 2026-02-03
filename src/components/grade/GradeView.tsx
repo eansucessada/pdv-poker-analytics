@@ -142,14 +142,10 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, filters, allRedes, u
   }, []);
 
   // data
-  const { gradeData, fullGradeDataPool } = useGradeData({
-    dataVersion,
-    filters: normalizedFilters,
-    appliedConfig,
-    activeSlot,
-    grindMode,
-    cutoffTimeStr
-  });
+const { gradeItems = [], items = [] } = useGradeData();
+const gradeData = gradeItems;
+const fullGradeDataPool = items;
+
 
   // alerts
   useGradeAlerts({
@@ -191,7 +187,8 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, filters, allRedes, u
   // pool pra sugestão (csv)
   const allTournamentPairs = useMemo(() => {
     const set = new Map<string, { key: string; nome: string; rede: string }>();
-    (fullGradeDataPool as any[]).forEach((t: any) => {
+    (fullGradeDataPool ?? []).forEach((t: any) => {
+
       const key = makeTournamentKey(t.rede, t.nome);
       if (!set.has(key)) set.set(key, { key, nome: t.nome, rede: t.rede });
     });
