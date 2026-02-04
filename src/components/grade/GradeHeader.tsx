@@ -93,8 +93,8 @@ const GradeHeader: React.FC<Props> = ({
 <button
   onClick={async () => {
     const { data, error } = await supabase.auth.signInWithPassword({
-      email: "nanato@gmail.com",
-      password: "nanato123123"
+      email: "teste@gmail.com",
+      password: "ian123123"
     });
     console.log("login", data, error);
     alert(error ? error.message : "Logado!");
