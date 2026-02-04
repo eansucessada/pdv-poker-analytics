@@ -19,7 +19,7 @@ import GradeImportModal from './GradeImportModal';
 
 const ALERT_SOUND_URL = 'https://assets.mixkit.co/active_storage/sfx/951/951-preview.mp3';
 
-const GradeView: React.FC<GradeViewProps> = ({ dataVersion, filters, allRedes, uniqueVelocidades }) => {
+const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }) => {
   // slots
   const { slots, activeSlotId, activeSlot, updateActiveSlot, switchSlot, addSlot, removeSlot } = useGradeSlots();
 
@@ -142,7 +142,7 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, filters, allRedes, u
   }, []);
 
   // data (pool base vindo do Supabase)
-  const { gradeItems: baseGradeItems = [], items: fullGradeDataPool = [] } = useGradeData();
+  const { gradeItems: baseGradeItems = [], items: fullGradeDataPool = [], allRedes, uniqueVelocidades, loading, ready, error } = useGradeData(datasetId, dataVersion);
 
   // =====================
   // Aplicar configuração da Grade (filtros + exclusões + manuais)

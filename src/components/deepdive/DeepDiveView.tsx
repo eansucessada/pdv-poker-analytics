@@ -1,14 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../services/supabaseClient";
 import { getUserId } from "../../services/auth";
-import { useDatasetTabs } from "../../hooks/useDatasetTabs";
 import type { FilterState, MetricFilter } from "../../types/common";
 import type { ConsolidatedStats, SelectionDetailRow } from "../../types/deepdive";
 import DeepDiveTable from "./DeepDiveTable";
 
 export interface DeepDiveViewProps {
   dataVersion: number;
+  datasetId: number;
 }
+
 
 const STATIC_SUGGESTIONS = ["Bounty", "Mystery", "Vanilla", "Hunter", "PKO"];
 const INITIAL_METRIC_FILTER: MetricFilter = { operator: "none", val1: "", val2: "" };
@@ -64,14 +65,11 @@ const safeNum = (v: unknown, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
-const DeepDiveView: React.FC<DeepDiveViewProps> = ({ dataVersion }) => {
+const DeepDiveView: React.FC<DeepDiveViewProps> = ({ dataVersion, datasetId }) => {
   // seleção por chave (rede::nome)
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [keywordInput, setKeywordInput] = useState("");
   const [activeKeywords, setActiveKeywords] = useState<string[]>([]);
-
-  // Aba de Base de Dados (dataset) selecionada pelo usuário
-  const { activeId: datasetId, ready: datasetReady } = useDatasetTabs();
   const [selectedRedes, setSelectedRedes] = useState<string[]>([]);
   const [selectedJogadores, setSelectedJogadores] = useState<string[]>([]);
   const [tournamentSearch, setTournamentSearch] = useState("");
@@ -136,7 +134,7 @@ useEffect(() => {
         return;
       }
 
-      if (!datasetReady) {
+      if (!true) {
         setTournamentsAgg([]);
         setPlayers([]);
         setLoading(false);
@@ -202,7 +200,7 @@ useEffect(() => {
   };
 
   void load();
-}, [dataVersion, datasetId, datasetReady]);
+}, [dataVersion, datasetId]);
 
 // =====================
 // Uniques (substitui DatabaseService)

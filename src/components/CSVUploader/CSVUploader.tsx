@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useDatasetTabs } from '../../hooks/useDatasetTabs';
 import { supabase } from '../../services/supabaseClient';
 import type { TournamentRaw } from '../../types';
 import { makeTournamentKey } from '../../utils/tournamentKey';
 
 interface CSVUploaderProps {
+  datasetId: number;
+  onDatasetChange: (id: number) => void;
   onUploadComplete: () => void;
 }
+
 
 const CONVERSION_RATES: Record<string, number> = {
   USD: 1.0,
@@ -29,7 +31,7 @@ const extractHora = (dataStr: string): string | null => {
 
 type PendingItem = TournamentRaw & { hora_str?: string | null };
 
-const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
+const CSVUploader: React.FC<CSVUploaderProps> = ({ datasetId, onDatasetChange, onUploadComplete }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const [pendingData, setPendingData] = useState<PendingItem[] | null>(null);
@@ -41,26 +43,7 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // =====================
-  // Abas de Base de Dados (datasets) - separa CSVs por "aba"
-  // =====================
-  const {
-    ready: datasetReady,
-    tabs: datasetTabs,
-    activeId: datasetId,
-    activeTab: activeDataset,
-    maxTabs: maxDatasetTabs,
-    setActive: setDatasetId,
-    addTab: addDatasetTab,
-    renameTab: renameDatasetTab
-  } = useDatasetTabs();
-
-  const [isRenamingDataset, setIsRenamingDataset] = useState(false);
-  const [datasetNameDraft, setDatasetNameDraft] = useState("");
-
-  useEffect(() => {
-    setDatasetNameDraft(activeDataset?.name ?? "");
-  }, [activeDataset?.id]);
-
+  
   useEffect(() => {
     if (successMessage) {
       const timer = setTimeout(() => setSuccessMessage(null), 4000);
@@ -348,9 +331,9 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
         return;
       }
 
-      const purgeResp = await supabase.rpc('purge_my_data');
+      const purgeResp = await supabase.rpc('purge_my_dataset', { p_dataset_id: datasetId });
       if (purgeResp.error) {
-        console.error('purge_my_data ERROR:', purgeResp.error);
+        console.error('purge_my_dataset ERROR:', purgeResp.error);
         alert(`Erro ao apagar seus dados: ${purgeResp.error.message}`);
         return;
       }
@@ -408,78 +391,29 @@ return (
               : 'Selecione múltiplos arquivos para consolidar tudo'}
         </p>
 
-        {/* Abas de Base de Dados (CSV) */}
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {datasetTabs.map((tab, idx) => (
+        {/* Base de Dados (2 abas fixas) */}
+        <div className="mt-3 flex items-center gap-2">
+          <span className="text-[11px] font-black text-slate-400 mr-1">BASE</span>
+          {[1, 2].map((id) => (
             <button
-              key={tab.id}
-              onClick={() => setDatasetId(tab.id)}
-              disabled={!datasetReady || isProcessing}
+              key={id}
+              onClick={() => onDatasetChange(id)}
+              disabled={isProcessing}
               className={`w-8 h-8 rounded-lg text-[10px] font-black transition-all border flex items-center justify-center ${
-                datasetId === tab.id
+                datasetId === id
                   ? 'bg-blue-600 border-blue-400 text-white shadow-lg'
                   : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300'
-              } ${(!datasetReady || isProcessing) ? 'opacity-60 cursor-not-allowed' : ''}`}
-              title={tab.name}
+              } ${isProcessing ? 'opacity-60 cursor-not-allowed' : ''}`}
+              title={`Base ${id}`}
             >
-              {idx + 1}
+              {id}
             </button>
           ))}
-
-          {datasetTabs.length < maxDatasetTabs && (
-            <button
-              onClick={addDatasetTab}
-              disabled={!datasetReady || isProcessing}
-              className={`w-8 h-8 rounded-lg text-slate-500 border border-slate-800 hover:border-blue-500/40 hover:text-blue-300 transition-all flex items-center justify-center text-base font-bold bg-slate-950/30 ${
-                (!datasetReady || isProcessing) ? 'opacity-60 cursor-not-allowed' : ''
-              }`}
-              title="Criar nova aba"
-            >
-              +
-            </button>
-          )}
-
-          <div className="ml-2 flex items-center gap-2 min-w-0">
-            {isRenamingDataset ? (
-              <input
-                autoFocus
-                value={datasetNameDraft}
-                onChange={(e) => setDatasetNameDraft(e.target.value)}
-                onBlur={() => {
-                  renameDatasetTab(datasetId, datasetNameDraft);
-                  setIsRenamingDataset(false);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    renameDatasetTab(datasetId, datasetNameDraft);
-                    setIsRenamingDataset(false);
-                  }
-                  if (e.key === 'Escape') {
-                    setDatasetNameDraft(activeDataset?.name ?? '');
-                    setIsRenamingDataset(false);
-                  }
-                }}
-                className="px-2 py-1 rounded-lg bg-slate-950 border border-slate-800 text-xs font-black text-white w-[140px] max-w-[50vw] outline-none focus:border-blue-500/50"
-              />
-            ) : (
-              <>
-                <span className="text-[10px] font-black text-white uppercase tracking-tight truncate max-w-[160px]">
-                  {activeDataset?.name ?? 'Base'}
-                </span>
-                <button
-                  onClick={() => setIsRenamingDataset(true)}
-                  disabled={!datasetReady || isProcessing}
-                  className="text-slate-600 hover:text-blue-400 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                  title="Renomear aba"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793...-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
-                  </svg>
-                </button>
-              </>
-            )}
+          <div className="ml-2 text-[11px] font-black text-slate-300 truncate">
+            {`BASE ${datasetId}`}
           </div>
         </div>
+
 
       </div>
 

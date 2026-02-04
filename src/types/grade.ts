@@ -51,10 +51,10 @@ export type GradeItem = (TournamentAggregated & { horario: string }) & {
 
 export interface GradeViewProps {
   dataVersion: number;
+  datasetId: number;
   filters: FilterState;
-  allRedes: string[];
-  uniqueVelocidades: string[];
 }
+
 
 export interface GradeRowProps {
   item: GradeItem;

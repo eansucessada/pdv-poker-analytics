@@ -1,14 +1,8 @@
 import { AuthGate } from "./components/auth";
-import React, { useState, useMemo, useEffect } from "react";
-import { supabase } from "./services/supabaseClient";
-
-// Tipos
+import React, { useEffect, useMemo, useState } from "react";
 import type { FilterState, MetricFilter } from "./types";
 
-// Componentes
 import CSVUploader from "./components/CSVUploader/CSVUploader";
-
-// ⚠️ Import direto dos arquivos para evitar erro de "barrel export"
 import DeepDiveView from "./components/deepdive/DeepDiveView";
 import GradeView from "./components/grade/GradeView";
 
@@ -16,150 +10,67 @@ const INITIAL_METRIC_FILTER: MetricFilter = { operator: "none", val1: "", val2: 
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<"deep-dive" | "grade">("deep-dive");
+
+  // Incrementa para forçar recarregamento de queries após import/purge
   const [dataVersion, setDataVersion] = useState(0);
 
-  // Listas vindas do banco (tabela agregada public.tournaments)
-  const [allRedesDb, setAllRedesDb] = useState<string[]>([]);
-  const [uniqueVelocidadesDb, setUniqueVelocidadesDb] = useState<string[]>([]);
+  // ✅ Dataset global: só 2 bases fixas (1 e 2)
+  const [datasetId, setDatasetId] = useState<number>(1);
+
+  // Filters globais (mantém comportamento atual do app)
+  const [filters] = useState<FilterState>({});
+
+  // DeepDive: filtros do Explain/Chart (mantém como estava)
+  const [metricFilter] = useState<MetricFilter>(INITIAL_METRIC_FILTER);
 
   useEffect(() => {
     console.log("PDV Poker Analytics: Local Hosting Mode Active");
   }, []);
 
-  // ✅ Ajuste: se seu FilterState usa rede/velocidade como string[],
-  // então aqui precisa ser array, não string.
-  const [filters] = useState<FilterState>({
-    search: "",
-    rede: [], // ✅ era ''
-    velocidade: [], // ✅ era ''
-    bandeiras: "",
-    metrics: {
-      stakeMedia: { ...INITIAL_METRIC_FILTER },
-      qtd: { ...INITIAL_METRIC_FILTER },
-      itmPercentual: { ...INITIAL_METRIC_FILTER },
-      retornoTotal: { ...INITIAL_METRIC_FILTER },
-      roiMedio: { ...INITIAL_METRIC_FILTER },
-      mediaParticipantes: { ...INITIAL_METRIC_FILTER },
-    },
-  });
+  const onUploadComplete = () => setDataVersion((v) => v + 1);
 
-  /**
-   * Busca as listas únicas para filtros no banco:
-   * - redes: distinct rede
-   * - velocidades: distinct velocidade (se não existir em tournaments, vira [])
-   *
-   * Observação: Sua tabela agregada `tournaments` hoje tem `rede` e `nome`.
-   * Ela NÃO tem "velocidade" no schema que montamos (a não ser que você tenha adicionado).
-   * Então:
-   * - redes vai funcionar
-   * - velocidades só vai funcionar se existir a coluna `velocidade` em `tournaments`
-   */
-  useEffect(() => {
-    const loadFilterOptions = async () => {
-      // Teste simples para validar conexão e sessão
-      const { data: sessionData } = await supabase.auth.getSession();
-      console.log("Supabase session:", sessionData?.session ? "OK" : "none");
-
-      // 1) Redes
-      const redesResp = await supabase.from("tournaments").select("rede");
-      if (!redesResp.error) {
-        const redes = Array.from(new Set((redesResp.data ?? []).map((r: any) => r.rede).filter(Boolean)));
-        redes.sort((a, b) => a.localeCompare(b));
-        setAllRedesDb(redes);
-      } else {
-        console.error("Erro carregando redes:", redesResp.error.message);
-        setAllRedesDb([]);
-      }
-
-      // 2) Velocidades (pode não existir na tabela agregada)
-      const velResp = await supabase.from("tournaments").select("velocidade");
-      if (!velResp.error) {
-        const vels = Array.from(new Set((velResp.data ?? []).map((r: any) => r.velocidade).filter(Boolean)));
-        vels.sort((a, b) => a.localeCompare(b));
-        setUniqueVelocidadesDb(vels);
-      } else {
-        // Se a coluna não existir, o Supabase retorna erro.
-        // Não vamos quebrar a UI por isso.
-        console.warn("Velocidade não disponível em tournaments (ok por enquanto).", velResp.error.message);
-        setUniqueVelocidadesDb([]);
-      }
-    };
-
-    void loadFilterOptions();
-  }, [dataVersion]);
-
-  // Mantém as props do GradeView como antes
-  const allRedes = useMemo(() => allRedesDb, [allRedesDb]);
-  const uniqueVelocidades = useMemo(() => uniqueVelocidadesDb, [uniqueVelocidadesDb]);
+  // Compat: alguns componentes esperam arrays memoizados
+  const memoFilters = useMemo(() => filters, [filters]);
 
   return (
     <AuthGate>
-      <div className="min-h-screen bg-slate-950 p-4 md:p-8">
-      <header className="max-w-7xl mx-auto mb-12 flex flex-col lg:flex-row lg:items-center justify-between gap-8">
-        <div className="text-center lg:text-left">
-          <h1 className="text-3xl font-black text-white tracking-tighter flex items-center justify-center lg:justify-start gap-3">
-            <span className="bg-blue-600 p-2 rounded-xl shadow-lg shadow-blue-600/20">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-8 w-8"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-              </svg>
-            </span>
-            PDV POKER<span className="text-blue-500">ANALYTICS</span>
-          </h1>
-          <p className="text-slate-500 mt-2 font-black uppercase tracking-[0.3em] text-[10px] text-center lg:text-left">
-            Professional Data Visualization Engine
-          </p>
-        </div>
-
-        <div className="flex flex-col md:flex-row items-center gap-6">
-          <nav className="bg-slate-900/50 p-1.5 rounded-2xl border border-slate-800 flex gap-1">
+      <div className="min-h-screen bg-[#070b15] text-white">
+        <div className="max-w-7xl mx-auto px-6 pt-6">
+          {/* Tabs principais */}
+          <div className="flex items-center gap-2 mb-6">
             <button
-              onClick={() => setActiveTab("deep-dive")}
-              className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                activeTab === "deep-dive" ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-white"
+              className={`px-4 py-2 rounded-xl text-sm font-semibold transition ${
+                activeTab === "deep-dive" ? "bg-[#2b6cff]" : "bg-[#121a2f] hover:bg-[#182246]"
               }`}
+              onClick={() => setActiveTab("deep-dive")}
             >
               Análise Profunda
             </button>
-
             <button
-              onClick={() => setActiveTab("grade")}
-              className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                activeTab === "grade" ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-white"
+              className={`px-4 py-2 rounded-xl text-sm font-semibold transition ${
+                activeTab === "grade" ? "bg-[#2b6cff]" : "bg-[#121a2f] hover:bg-[#182246]"
               }`}
+              onClick={() => setActiveTab("grade")}
             >
               Grade
             </button>
-          </nav>
+          </div>
 
-          {/* Por enquanto mantemos o CSVUploader (local), mas ele já serve para forçar refresh */}
-          <CSVUploader onUploadComplete={() => setDataVersion((v) => v + 1)} />
+          {/* Importação sempre visível no topo (usa dataset global) */}
+          <CSVUploader
+            datasetId={datasetId}
+            onDatasetChange={(id) => setDatasetId(id === 2 ? 2 : 1)}
+            onUploadComplete={onUploadComplete}
+          />
+
+          <div className="mt-6">
+            {activeTab === "deep-dive" ? (
+              <DeepDiveView dataVersion={dataVersion} datasetId={datasetId} />
+            ) : (
+              <GradeView dataVersion={dataVersion} datasetId={datasetId} filters={memoFilters} />
+            )}
+          </div>
         </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto">
-        <div className={activeTab === "deep-dive" ? "block" : "hidden"}>
-          <DeepDiveView dataVersion={dataVersion} />
-        </div>
-
-        <div className={activeTab === "grade" ? "block" : "hidden"}>
-          <GradeView dataVersion={dataVersion} filters={filters} allRedes={allRedes} uniqueVelocidades={uniqueVelocidades} />
-        </div>
-      </main>
-
-      <footer className="mt-20 text-center py-12 border-t border-slate-900">
-        <p className="text-slate-700 text-[9px] font-black uppercase tracking-[0.5em] text-center">
-          &copy; {new Date().getFullYear()} professional analytics engine &bull; built for performance
-        </p>
-      </footer>
       </div>
     </AuthGate>
   );

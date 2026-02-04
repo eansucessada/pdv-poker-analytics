@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "../services/supabaseClient";
 import { getUserId } from "../services/auth";
-import { useDatasetTabs } from "./useDatasetTabs";
 
 // Tipagem do que vem da tabela public.tournaments (agregada)
 export type TournamentAggRow = {
@@ -37,7 +36,7 @@ export type TournamentAggRow = {
 // Depois encaixamos seu FilterState oficial.
 type FilterState = any;
 
-export function useGradeData() {
+export function useGradeData(datasetId: number, dataVersion: number) {
   const [rowsRaw, setRowsRaw] = useState<TournamentAggRow[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [ready, setReady] = useState<boolean>(false);
@@ -45,10 +44,6 @@ export function useGradeData() {
 
   // Mantém contrato atual do app
   const [filters, setFilters] = useState<FilterState>({});
-
-  // Aba de Base de Dados (dataset) selecionada pelo usuário
-  const { activeId: datasetId, ready: datasetReady } = useDatasetTabs();
-
   // Opções úteis para filtros (se você quiser usar direto do hook)
   const [allRedes, setAllRedes] = useState<string[]>([]);
   const [uniqueVelocidades, setUniqueVelocidades] = useState<string[]>([]);
@@ -66,15 +61,6 @@ export function useGradeData() {
       setRowsRaw([]);
       setAllRedes([]);
       setUniqueVelocidades([]);
-      return;
-    }
-
-    if (!datasetReady) {
-      setRowsRaw([]);
-      setAllRedes([]);
-      setUniqueVelocidades([]);
-      setLoading(false);
-      setReady(false);
       return;
     }
 
@@ -108,7 +94,7 @@ export function useGradeData() {
     setLoading(false);
     setReady(true);
   }
-}, [datasetId, datasetReady]);
+}, [datasetId]);
 // Recarrega automaticamente quando o usuário faz login/logout
 useEffect(() => {
   const { data } = supabase.auth.onAuthStateChange((_event, session) => {
