@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../services/supabaseClient";
 import { getUserId } from "../../services/auth";
+import { useDatasetTabs } from "../../hooks/useDatasetTabs";
 import type { FilterState, MetricFilter } from "../../types/common";
 import type { ConsolidatedStats, SelectionDetailRow } from "../../types/deepdive";
 import DeepDiveTable from "./DeepDiveTable";
@@ -68,6 +69,9 @@ const DeepDiveView: React.FC<DeepDiveViewProps> = ({ dataVersion }) => {
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [keywordInput, setKeywordInput] = useState("");
   const [activeKeywords, setActiveKeywords] = useState<string[]>([]);
+
+  // Aba de Base de Dados (dataset) selecionada pelo usuário
+  const { activeId: datasetId, ready: datasetReady } = useDatasetTabs();
   const [selectedRedes, setSelectedRedes] = useState<string[]>([]);
   const [selectedJogadores, setSelectedJogadores] = useState<string[]>([]);
   const [tournamentSearch, setTournamentSearch] = useState("");
@@ -132,6 +136,13 @@ useEffect(() => {
         return;
       }
 
+      if (!datasetReady) {
+        setTournamentsAgg([]);
+        setPlayers([]);
+        setLoading(false);
+        return;
+      }
+
       
 
       // 1) Tournaments agregada (para DeepDive)
@@ -139,6 +150,7 @@ useEffect(() => {
         .from("tournaments")
         .select("*")
         .eq("user_id", userId)
+        .eq("dataset_id", datasetId)
         .order("updated_at", { ascending: false });
 
       if (aggResp.error) throw new Error(aggResp.error.message);
@@ -190,7 +202,7 @@ useEffect(() => {
   };
 
   void load();
-}, [dataVersion]);
+}, [dataVersion, datasetId, datasetReady]);
 
 // =====================
 // Uniques (substitui DatabaseService)

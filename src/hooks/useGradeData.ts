@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "../services/supabaseClient";
 import { getUserId } from "../services/auth";
+import { useDatasetTabs } from "./useDatasetTabs";
 
 // Tipagem do que vem da tabela public.tournaments (agregada)
 export type TournamentAggRow = {
   user_id: string;
+  dataset_id: number;
   tournament_key: string;
 
   rede: string;
@@ -44,6 +46,9 @@ export function useGradeData() {
   // Mantém contrato atual do app
   const [filters, setFilters] = useState<FilterState>({});
 
+  // Aba de Base de Dados (dataset) selecionada pelo usuário
+  const { activeId: datasetId, ready: datasetReady } = useDatasetTabs();
+
   // Opções úteis para filtros (se você quiser usar direto do hook)
   const [allRedes, setAllRedes] = useState<string[]>([]);
   const [uniqueVelocidades, setUniqueVelocidades] = useState<string[]>([]);
@@ -64,10 +69,20 @@ export function useGradeData() {
       return;
     }
 
+    if (!datasetReady) {
+      setRowsRaw([]);
+      setAllRedes([]);
+      setUniqueVelocidades([]);
+      setLoading(false);
+      setReady(false);
+      return;
+    }
+
     const { data, error: dbErr } = await supabase
       .from("tournaments")
       .select("*")
       .eq("user_id", userId)
+      .eq("dataset_id", datasetId)
       .order("updated_at", { ascending: false });
 
     if (dbErr) throw dbErr;
@@ -93,7 +108,7 @@ export function useGradeData() {
     setLoading(false);
     setReady(true);
   }
-}, []);
+}, [datasetId, datasetReady]);
 // Recarrega automaticamente quando o usuário faz login/logout
 useEffect(() => {
   const { data } = supabase.auth.onAuthStateChange((_event, session) => {
