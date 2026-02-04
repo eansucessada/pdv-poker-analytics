@@ -141,10 +141,164 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, filters, allRedes, u
     return () => clearInterval(timer);
   }, []);
 
-  // data
-const { gradeItems = [], items = [] } = useGradeData();
-const gradeData = gradeItems;
-const fullGradeDataPool = items;
+  // data (pool base vindo do Supabase)
+  const { gradeItems: baseGradeItems = [], items: fullGradeDataPool = [] } = useGradeData();
+
+  // =====================
+  // Aplicar configuração da Grade (filtros + exclusões + manuais)
+  // =====================
+  const gradeData = useMemo(() => {
+    const toNum = (v: unknown) => {
+      if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+      if (typeof v === 'string') {
+        const n = parseFloat(v.replace(',', '.'));
+        return Number.isFinite(n) ? n : 0;
+      }
+      return 0;
+    };
+
+    const normTime = (t: string) => {
+      const s = (t || '').trim();
+      if (!/^\d{1,2}:\d{2}$/.test(s)) return '00:00';
+      const [hRaw, mRaw] = s.split(':');
+      const h = Math.min(23, Math.max(0, parseInt(hRaw, 10) || 0));
+      const m = Math.min(59, Math.max(0, parseInt(mRaw, 10) || 0));
+      return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+    };
+
+    const timeInWindow = (t: string, start: string, end: string) => {
+      const tt = normTime(t);
+      const ss = normTime(start);
+      const ee = normTime(end);
+      if (ss <= ee) return tt >= ss && tt <= ee;     // janela normal
+      return tt >= ss || tt <= ee;                   // cruza meia-noite
+    };
+
+    const cfg = appliedConfig;
+    const minSampling = cfg.minSampling || 0;
+    const minRoi = cfg.minRoi.trim() === '' ? null : toNum(cfg.minRoi);
+    const minStake = cfg.minStake.trim() === '' ? null : toNum(cfg.minStake);
+    const maxStake = cfg.maxStake.trim() === '' ? null : toNum(cfg.maxStake);
+    const minField = cfg.minField.trim() === '' ? null : toNum(cfg.minField);
+    const maxField = cfg.maxField.trim() === '' ? null : toNum(cfg.maxField);
+    const selRede = Array.isArray(cfg.selRede) ? cfg.selRede : [];
+    const selSpeed = Array.isArray(cfg.selSpeed) ? cfg.selSpeed : [];
+    const excludedKeys = new Set((activeSlot.excludedKeys ?? []).map(k => String(k)));
+    const excludeTerms = (cfg.excludeKeywords ?? []).map(k => k.trim().toLowerCase()).filter(Boolean);
+
+    // 1) Base items do Supabase (enriquecer com horarioManual)
+    const byKey = new Map<string, any>();
+    (baseGradeItems ?? []).forEach((it: any) => {
+      const k = String(it.tournamentKey ?? it.tournament_key ?? '');
+      if (!k) return;
+      const horarioManual = activeSlot.manualTimes?.[k] ?? '';
+      byKey.set(k, { ...it, tournamentKey: k, horarioManual });
+    });
+
+    // 2) Injetar manuais (mesmo se não existirem no Supabase)
+    (activeSlot.manuallyAddedKeys ?? []).forEach((kRaw) => {
+      const k = String(kRaw);
+      if (!k) return;
+      if (excludedKeys.has(k)) return;
+
+      if (!byKey.has(k)) {
+        const cache = (activeSlot.statsCache ?? {})[k];
+        if (cache) {
+          byKey.set(k, {
+            tournamentKey: k,
+            nome: cache.nome ?? '',
+            rede: cache.rede ?? 'Manual',
+            velocidadePredominante: cache.velocidadePredominante ?? 'Normal',
+            stakeMedia: toNum(cache.stakeMedia),
+            qtd: toNum(cache.qtd),
+            itm: 0,
+            itmPercentual: 0,
+            retornoTotal: 0,
+            roiTotal: toNum(cache.roiTotal),
+            roiMedio: toNum(cache.roiTotal),
+            mediaParticipantes: toNum(cache.mediaParticipantes),
+            bandeiras: cache.bandeiras ?? '',
+            horario: normTime(cache.horario ?? '00:00'),
+            horarioManual: activeSlot.manualTimes?.[k] ?? (cache.horario ?? ''),
+            isFullyManual: true,
+            isFromCache: true
+          });
+        }
+      } else {
+        const prev = byKey.get(k);
+        byKey.set(k, { ...prev, isFullyManual: prev?.isFullyManual ?? false });
+      }
+    });
+
+    // 3) Aplicar filtros
+    let list = Array.from(byKey.values());
+
+    // removidos no lixo
+    list = list.filter((it: any) => !excludedKeys.has(String(it.tournamentKey)));
+
+    // excluídos por termos
+    if (excludeTerms.length > 0) {
+      list = list.filter((it: any) => {
+        const nome = String(it.nome ?? '').toLowerCase();
+        const rede = String(it.rede ?? '').toLowerCase();
+        const vel = String(it.velocidadePredominante ?? it.velocidade ?? '').toLowerCase();
+        return !excludeTerms.some(term => nome.includes(term) || rede.includes(term) || vel.includes(term));
+      });
+    }
+
+    // Rede / Estrutura (velocidade)
+    if (selRede.length > 0) {
+      const set = new Set(selRede.map(s => s.toLowerCase()));
+      list = list.filter((it: any) => set.has(String(it.rede ?? '').toLowerCase()));
+    }
+    if (selSpeed.length > 0) {
+      const set = new Set(selSpeed.map(s => s.toLowerCase()));
+      list = list.filter((it: any) => set.has(String(it.velocidadePredominante ?? it.velocidade ?? '').toLowerCase()));
+    }
+
+    // Janela horária (usa manual se existir)
+    list = list.filter((it: any) => {
+      const t = String(it.horarioManual || it.horario || '00:00');
+      return timeInWindow(t, cfg.startTime, cfg.endTime);
+    });
+
+    // Critérios numéricos (não aplicar em torneio totalmente manual)
+    list = list.filter((it: any) => {
+      const isManual = !!it.isFullyManual;
+      if (isManual) return true;
+
+      const qtd = toNum(it.qtd);
+      if (qtd < minSampling) return false;
+
+      if (minRoi != null && toNum(it.roiTotal) < minRoi) return false;
+      if (minStake != null && toNum(it.stakeMedia) < minStake) return false;
+      if (maxStake != null && toNum(it.stakeMedia) > maxStake) return false;
+
+      const field = toNum(it.mediaParticipantes ?? it.fieldMedio ?? it.field_avg);
+      if (minField != null && field < minField) return false;
+      if (maxField != null && field > maxField) return false;
+
+      return true;
+    });
+
+    // ordenar por horário
+    list.sort((a: any, b: any) => {
+      const ta = normTime(String(a.horarioManual || a.horario || '00:00'));
+      const tb = normTime(String(b.horarioManual || b.horario || '00:00'));
+      if (ta !== tb) return ta.localeCompare(tb);
+      return String(a.nome ?? '').localeCompare(String(b.nome ?? ''));
+    });
+
+    return list;
+  }, [
+    baseGradeItems,
+    appliedConfig,
+    activeSlot.excludedKeys,
+    activeSlot.manuallyAddedKeys,
+    activeSlot.manualTimes,
+    activeSlot.statsCache
+  ]);
+
 
 
   // alerts

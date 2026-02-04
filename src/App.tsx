@@ -1,3 +1,4 @@
+import { AuthGate } from "./components/auth";
 import React, { useState, useMemo, useEffect } from "react";
 import { supabase } from "./services/supabaseClient";
 

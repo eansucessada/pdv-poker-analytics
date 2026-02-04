@@ -225,33 +225,14 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
     }
     const user_id = userRes.user.id;
 
-    // ✅ SUBSTITUIR BASE: limpa agregado + raw do usuário e legado (user_id null)
+
+
+    // ✅ SUBSTITUIR BASE: limpa tudo do usuário no banco (raw + agregado + imports)
     if (!append) {
-      const { error: delAggUser } = await supabase.from('tournaments').delete().eq('user_id', user_id);
-      if (delAggUser) {
-        console.error('DELETE tournaments (user) ERROR:', delAggUser);
-        alert(`Erro ao limpar tournaments (user): ${delAggUser.message}`);
-        return;
-      }
-
-      const { error: delAggNull } = await supabase.from('tournaments').delete().is('user_id', null);
-      if (delAggNull) {
-        console.error('DELETE tournaments (null) ERROR:', delAggNull);
-        alert(`Erro ao limpar tournaments (null): ${delAggNull.message}`);
-        return;
-      }
-
-      const { error: delRawUser } = await supabase.from('tournaments_raw').delete().eq('user_id', user_id);
-      if (delRawUser) {
-        console.error('DELETE tournaments_raw (user) ERROR:', delRawUser);
-        alert(`Erro ao limpar tournaments_raw (user): ${delRawUser.message}`);
-        return;
-      }
-
-      const { error: delRawNull } = await supabase.from('tournaments_raw').delete().is('user_id', null);
-      if (delRawNull) {
-        console.error('DELETE tournaments_raw (null) ERROR:', delRawNull);
-        alert(`Erro ao limpar tournaments_raw (null): ${delRawNull.message}`);
+      const purgeResp = await supabase.rpc('purge_my_data');
+      if (purgeResp.error) {
+        console.error('purge_my_data ERROR:', purgeResp.error);
+        alert(`Erro ao limpar sua base anterior: ${purgeResp.error.message}`);
         return;
       }
     }
@@ -310,9 +291,9 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
 
     // 4) consolida RAW -> tournaments
     const { error: finalizeErr } = await supabase.rpc('finalize_import', {
-  p_import_id: import_id,
-  p_replace: !append
-});
+      p_import_id: import_id,
+      p_replace: !append
+    });
     if (finalizeErr) {
       console.error('FINALIZE ERROR:', finalizeErr);
       await supabase.from('imports').update({ status: 'error' }).eq('id', import_id);
