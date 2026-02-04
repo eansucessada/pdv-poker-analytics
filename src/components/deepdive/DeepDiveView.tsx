@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../services/supabaseClient";
-
+import { getUserId } from "../../services/auth";
 import type { FilterState, MetricFilter } from "../../types/common";
 import type { ConsolidatedStats, SelectionDetailRow } from "../../types/deepdive";
 import DeepDiveTable from "./DeepDiveTable";
@@ -112,74 +112,111 @@ const DeepDiveView: React.FC<DeepDiveViewProps> = ({ dataVersion }) => {
   const redeDropdownRef = useRef<HTMLDivElement>(null);
   const summaryListRef = useRef<HTMLDivElement>(null);
 
-  // =====================
-  // Carregar dados do Supabase
-  // =====================
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      setFatalError(null);
+ // =====================
+// Carregar dados do Supabase
+// =====================
+useEffect(() => {
+  const load = async () => {
+    setLoading(true);
+    setFatalError(null);
 
-      try {
-        // 1) Tournaments agregada (para DeepDive)
-        const aggResp = await supabase.from("tournaments").select("*").order("updated_at", { ascending: false });
-        if (aggResp.error) throw new Error(aggResp.error.message);
-        setTournamentsAgg((aggResp.data ?? []) as TournamentAggRow[]);
+    try {
+      // Pega o usuário logado
+      const userId = await getUserId();
 
-        // 2) Players: deriva do raw (apenas para preencher dropdown)
-        //    OBS: Para escala grande, o ideal é criar uma VIEW/RPC com DISTINCT + LIMIT server-side.
-        const rawResp = await supabase.from("tournaments_raw").select(`"Rede","Jogador"`).limit(5000);
-        if (rawResp.error) {
-          console.warn("Não foi possível carregar players do tournaments_raw:", rawResp.error.message);
-          setPlayers([]);
-        } else {
-          const seen = new Set<string>();
-          const list: PlayerOption[] = [];
-
-          for (const r of rawResp.data ?? []) {
-            const rede = safeStr((r as any).Rede).trim();
-            const jogador = safeStr((r as any).Jogador).trim();
-            if (!rede || !jogador) continue;
-
-            const id = `${rede}::${jogador}`;
-            if (seen.has(id)) continue;
-            seen.add(id);
-
-            list.push({ id, rede, jogador });
-          }
-
-          list.sort((a, b) => (a.jogador + a.rede).localeCompare(b.jogador + b.rede));
-          setPlayers(list);
-        }
-      } catch (e: any) {
-        console.error(e);
-        setFatalError(e?.message ?? "Erro inesperado ao carregar dados do Supabase");
+      // Sem usuário => não carrega nada (evita erro e vazamento)
+      if (!userId) {
         setTournamentsAgg([]);
         setPlayers([]);
-      } finally {
         setLoading(false);
+        return;
       }
-    };
 
-    void load();
-  }, [dataVersion]);
+      
 
-  // =====================
-  // Uniques (substitui DatabaseService)
-  // =====================
-  const uniqueVelocities = useMemo(() => {
-    const vels = Array.from(new Set(tournamentsAgg.map((t) => safeStr(t.velocidade).trim()).filter((v) => v !== "")));
-    vels.sort((a, b) => a.localeCompare(b));
-    return vels;
-  }, [tournamentsAgg]);
+      // 1) Tournaments agregada (para DeepDive)
+      const aggResp = await supabase
+        .from("tournaments")
+        .select("*")
+        .eq("user_id", userId)
+        .order("updated_at", { ascending: false });
 
-  const uniqueRedes = useMemo(() => {
-    const redes = Array.from(new Set(tournamentsAgg.map((t) => safeStr(t.rede).trim()).filter(Boolean)));
-    redes.sort((a, b) => a.localeCompare(b));
-    return redes;
-  }, [tournamentsAgg]);
+      if (aggResp.error) throw new Error(aggResp.error.message);
+      setTournamentsAgg((aggResp.data ?? []) as TournamentAggRow[]);
 
-  const uniquePlayers = useMemo(() => players, [players]);
+      // 2) Players: deriva do raw (apenas para preencher dropdown)
+      //    OBS: Para escala grande, o ideal é criar uma VIEW/RPC com DISTINCT + LIMIT server-side.
+      const rawResp = await supabase
+        .from("tournaments_raw")
+        .select(`"Rede","Jogador"`)
+        .eq("user_id", userId)
+        .limit(5000);
+
+      if (rawResp.error) {
+        console.warn(
+          "Não foi possível carregar players do tournaments_raw:",
+          rawResp.error.message
+        );
+        setPlayers([]);
+      } else {
+        const seen = new Set<string>();
+        const list: PlayerOption[] = [];
+
+        for (const r of rawResp.data ?? []) {
+          const rede = safeStr((r as any).Rede).trim();
+          const jogador = safeStr((r as any).Jogador).trim();
+          if (!rede || !jogador) continue;
+
+          const id = `${rede}::${jogador}`;
+          if (seen.has(id)) continue;
+          seen.add(id);
+
+          list.push({ id, rede, jogador });
+        }
+
+        list.sort((a, b) =>
+          (a.jogador + a.rede).localeCompare(b.jogador + b.rede)
+        );
+        setPlayers(list);
+      }
+    } catch (e: any) {
+      console.error(e);
+      setFatalError(e?.message ?? "Erro inesperado ao carregar dados do Supabase");
+      setTournamentsAgg([]);
+      setPlayers([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  void load();
+}, [dataVersion]);
+
+// =====================
+// Uniques (substitui DatabaseService)
+// =====================
+const uniqueVelocities = useMemo(() => {
+  const vels = Array.from(
+    new Set(
+      tournamentsAgg
+        .map((t) => safeStr(t.velocidade).trim())
+        .filter((v) => v !== "")
+    )
+  );
+  vels.sort((a, b) => a.localeCompare(b));
+  return vels;
+}, [tournamentsAgg]);
+
+const uniqueRedes = useMemo(() => {
+  const redes = Array.from(
+    new Set(tournamentsAgg.map((t) => safeStr(t.rede).trim()).filter(Boolean))
+  );
+  redes.sort((a, b) => a.localeCompare(b));
+  return redes;
+}, [tournamentsAgg]);
+
+const uniquePlayers = useMemo(() => players, [players]);
+
 
   // =====================
   // UI helpers

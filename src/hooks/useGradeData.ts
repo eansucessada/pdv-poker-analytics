@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "../services/supabaseClient";
+import { getUserId } from "../services/auth";
 
 // Tipagem do que vem da tabela public.tournaments (agregada)
 export type TournamentAggRow = {
@@ -48,40 +49,67 @@ export function useGradeData() {
   const [uniqueVelocidades, setUniqueVelocidades] = useState<string[]>([]);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  setLoading(true);
+  setError(null);
 
-    try {
-      const { data, error: dbErr } = await supabase
-        .from("tournaments")
-        .select("*")
-        .order("updated_at", { ascending: false });
+  try {
+    const userId = await getUserId();
 
-      if (dbErr) throw dbErr;
-
-      const rows = (data ?? []) as TournamentAggRow[];
-      setRowsRaw(rows);
-
-      // Atualiza listas únicas (para filtros)
-      const redes = Array.from(new Set(rows.map((r) => r.rede).filter(Boolean))).sort((a, b) =>
-        a.localeCompare(b)
-      );
-      const velocidades = Array.from(
-        new Set(rows.map((r) => r.velocidade).filter((v): v is string => !!v && v.trim() !== ""))
-      ).sort((a, b) => a.localeCompare(b));
-
-      setAllRedes(redes);
-      setUniqueVelocidades(velocidades);
-    } catch (e: any) {
-      setError(e?.message ?? "Erro ao carregar tournaments do Supabase");
+    // Sem login => não carrega nada (evita erro e vazamento)
+    // (Quando o usuário logar, a gente recarrega via onAuthStateChange)
+    if (!userId) {
       setRowsRaw([]);
       setAllRedes([]);
       setUniqueVelocidades([]);
-    } finally {
-      setLoading(false);
-      setReady(true);
+      return;
     }
-  }, []);
+
+    const { data, error: dbErr } = await supabase
+      .from("tournaments")
+      .select("*")
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false });
+
+    if (dbErr) throw dbErr;
+
+    const rows = (data ?? []) as TournamentAggRow[];
+    setRowsRaw(rows);
+
+    const redes = Array.from(new Set(rows.map((r) => r.rede).filter(Boolean)));
+    redes.sort((a, b) => a.localeCompare(b));
+    setAllRedes(redes);
+
+    const velocidades = Array.from(
+      new Set(rows.map((r) => (r.velocidade ?? "").trim()).filter(Boolean))
+    );
+    velocidades.sort((a, b) => a.localeCompare(b));
+    setUniqueVelocidades(velocidades);
+  } catch (e: any) {
+    setError(e?.message ?? "Erro ao carregar tournaments do Supabase");
+    setRowsRaw([]);
+    setAllRedes([]);
+    setUniqueVelocidades([]);
+  } finally {
+    setLoading(false);
+    setReady(true);
+  }
+}, []);
+// Recarrega automaticamente quando o usuário faz login/logout
+useEffect(() => {
+  const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+    if (session?.user?.id) {
+      void refresh();
+    } else {
+      setRowsRaw([]);
+      setAllRedes([]);
+      setUniqueVelocidades([]);
+    }
+  });
+
+  return () => {
+    data.subscription.unsubscribe();
+  };
+}, [refresh]);
 
   useEffect(() => {
     void refresh();
