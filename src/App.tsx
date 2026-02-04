@@ -93,7 +93,8 @@ const App: React.FC = () => {
   const uniqueVelocidades = useMemo(() => uniqueVelocidadesDb, [uniqueVelocidadesDb]);
 
   return (
-    <div className="min-h-screen bg-slate-950 p-4 md:p-8">
+    <AuthGate>
+      <div className="min-h-screen bg-slate-950 p-4 md:p-8">
       <header className="max-w-7xl mx-auto mb-12 flex flex-col lg:flex-row lg:items-center justify-between gap-8">
         <div className="text-center lg:text-left">
           <h1 className="text-3xl font-black text-white tracking-tighter flex items-center justify-center lg:justify-start gap-3">
@@ -159,7 +160,8 @@ const App: React.FC = () => {
           &copy; {new Date().getFullYear()} professional analytics engine &bull; built for performance
         </p>
       </footer>
-    </div>
+      </div>
+    </AuthGate>
   );
 };
 

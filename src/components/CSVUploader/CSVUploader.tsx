@@ -35,6 +35,8 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
   const [totalFilesSelected, setTotalFilesSelected] = useState(0);
   const [currentFileIndex, setCurrentFileIndex] = useState(0);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [purgeLoading, setPurgeLoading] = useState(false);
+  const [showPurgeConfirm, setShowPurgeConfirm] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -310,7 +312,42 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
     setSuccessMessage(`${rows.length} jogos importados com sucesso!`);
   };
 
-  return (
+  
+  const doPurgeMyData = async () => {
+    try {
+      setPurgeLoading(true);
+      setIsProcessing(true);
+      setSuccessMessage(null);
+
+      const { data: userRes, error: userErr } = await supabase.auth.getUser();
+      if (userErr || !userRes?.user?.id) {
+        alert('Você precisa estar logado para apagar seus dados.');
+        return;
+      }
+
+      const purgeResp = await supabase.rpc('purge_my_data');
+      if (purgeResp.error) {
+        console.error('purge_my_data ERROR:', purgeResp.error);
+        alert(`Erro ao apagar seus dados: ${purgeResp.error.message}`);
+        return;
+      }
+
+      // limpa estados locais para refletir base vazia
+      setPendingData(null);
+      setShowOptions(false);
+      setTotalFilesSelected(0);
+      setCurrentFileIndex(0);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+
+      setSuccessMessage('Dados apagados com sucesso.');
+      onUploadComplete();
+    } finally {
+      setIsProcessing(false);
+      setPurgeLoading(false);
+    }
+  };
+
+return (
     <div className="flex flex-col md:flex-row items-center gap-6 bg-slate-900/60 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-lg relative">
       <div className="flex-1 text-center">
         <h3 className="text-lg font-black text-white mb-1 flex items-center justify-center gap-2 text-center">
@@ -364,6 +401,65 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ onUploadComplete }) => {
           <input ref={fileInputRef} type="file" className="hidden" accept=".csv" multiple onChange={handleFileChange} />
         </div>
       </label>
+
+
+      <button
+        type="button"
+        onClick={() => setShowPurgeConfirm(true)}
+        disabled={isProcessing || purgeLoading}
+        className={`mx-auto px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-[0.22em] border transition-all ${
+          isProcessing || purgeLoading
+            ? 'bg-slate-900/40 text-slate-500 border-slate-800 cursor-not-allowed'
+            : 'bg-red-600/10 text-red-300 border-red-500/30 hover:bg-red-600/20 hover:border-red-400/60'
+        }`}
+      >
+        {purgeLoading ? 'Apagando...' : 'Apagar meus dados'}
+      </button>
+      {showPurgeConfirm && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200"
+          onClick={() => setShowPurgeConfirm(false)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 p-8 rounded-[2.5rem] shadow-2xl max-w-md w-full animate-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h4 className="text-xl font-black text-white text-center mb-4 uppercase tracking-widest">
+              Apagar dados da conta
+            </h4>
+
+            <p className="text-sm text-slate-400 text-center mb-8 font-medium">
+              Isso vai apagar <span className="text-white font-bold">todos os dados salvos</span> na sua conta.
+              <br />
+              Esta ação não pode ser desfeita.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setShowPurgeConfirm(false)}
+                className="w-full py-3 bg-slate-800 hover:bg-slate-700 text-white font-black rounded-2xl transition-all text-[10px] uppercase tracking-[0.2em] border border-slate-700"
+                disabled={purgeLoading || isProcessing}
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  setShowPurgeConfirm(false);
+                  await doPurgeMyData();
+                }}
+                className="w-full py-3 bg-red-600/20 hover:bg-red-600/30 text-red-200 font-black rounded-2xl transition-all text-[10px] uppercase tracking-[0.2em] border border-red-500/40 hover:border-red-400/70"
+                disabled={purgeLoading || isProcessing}
+              >
+                {purgeLoading ? 'Apagando...' : 'Apagar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {showOptions && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-300">
