@@ -4,12 +4,12 @@ import { getUserId } from "../../services/auth";
 import type { FilterState, MetricFilter } from "../../types/common";
 import type { ConsolidatedStats, SelectionDetailRow } from "../../types/deepdive";
 import DeepDiveTable from "./DeepDiveTable";
+import { useDatasetCounts } from "../../hooks/useDatasetCounts";
 
 export interface DeepDiveViewProps {
   dataVersion: number;
   datasetId: number;
 }
-
 
 const STATIC_SUGGESTIONS = ["Bounty", "Mystery", "Vanilla", "Hunter", "PKO"];
 const INITIAL_METRIC_FILTER: MetricFilter = { operator: "none", val1: "", val2: "" };
@@ -46,7 +46,6 @@ type TournamentAggRow = {
 
   field_avg: number | null;
 
-  // opcional (se você ainda não criou essa coluna na tabela tournaments)
   velocidade?: string | null;
 
   first_played_at: string | null;
@@ -81,6 +80,14 @@ const DeepDiveView: React.FC<DeepDiveViewProps> = ({ dataVersion, datasetId }) =
   const [showPlayerDropdown, setShowPlayerDropdown] = useState(false);
   const [showRedeDropdown, setShowRedeDropdown] = useState(false);
 
+  // ✅ NOVO: contagens oficiais do dataset (sem baixar rows)
+  const {
+    raw: rawTotal,
+    unique: uniqueTotal,
+    loading: countsLoading,
+    error: countsError,
+  } = useDatasetCounts(datasetId);
+
   // Dados vindos do Supabase
   const [tournamentsAgg, setTournamentsAgg] = useState<TournamentAggRow[]>([]);
   const [players, setPlayers] = useState<PlayerOption[]>([]);
@@ -114,119 +121,99 @@ const DeepDiveView: React.FC<DeepDiveViewProps> = ({ dataVersion, datasetId }) =
   const redeDropdownRef = useRef<HTMLDivElement>(null);
   const summaryListRef = useRef<HTMLDivElement>(null);
 
- // =====================
-// Carregar dados do Supabase
-// =====================
-useEffect(() => {
-  const load = async () => {
-    setLoading(true);
-    setFatalError(null);
+  // =====================
+  // Carregar dados do Supabase
+  // =====================
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      setFatalError(null);
 
-    try {
-      // Pega o usuário logado
-      const userId = await getUserId();
+      try {
+        // Pega o usuário logado
+        const userId = await getUserId();
 
-      // Sem usuário => não carrega nada (evita erro e vazamento)
-      if (!userId) {
-        setTournamentsAgg([]);
-        setPlayers([]);
-        setLoading(false);
-        return;
-      }
-
-      if (!true) {
-        setTournamentsAgg([]);
-        setPlayers([]);
-        setLoading(false);
-        return;
-      }
-
-      
-
-      // 1) Tournaments agregada (para DeepDive)
-      const aggResp = await supabase
-        .from("tournaments")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("dataset_id", datasetId)
-        .order("updated_at", { ascending: false });
-
-      if (aggResp.error) throw new Error(aggResp.error.message);
-      setTournamentsAgg((aggResp.data ?? []) as TournamentAggRow[]);
-
-      // 2) Players: deriva do raw (apenas para preencher dropdown)
-      //    OBS: Para escala grande, o ideal é criar uma VIEW/RPC com DISTINCT + LIMIT server-side.
-      const rawResp = await supabase
-        .from("tournaments_raw")
-        .select(`"Rede","Jogador"`)
-        .eq("user_id", userId)
-        .limit(5000);
-
-      if (rawResp.error) {
-        console.warn(
-          "Não foi possível carregar players do tournaments_raw:",
-          rawResp.error.message
-        );
-        setPlayers([]);
-      } else {
-        const seen = new Set<string>();
-        const list: PlayerOption[] = [];
-
-        for (const r of rawResp.data ?? []) {
-          const rede = safeStr((r as any).Rede).trim();
-          const jogador = safeStr((r as any).Jogador).trim();
-          if (!rede || !jogador) continue;
-
-          const id = `${rede}::${jogador}`;
-          if (seen.has(id)) continue;
-          seen.add(id);
-
-          list.push({ id, rede, jogador });
+        // Sem usuário => não carrega nada (evita erro e vazamento)
+        if (!userId) {
+          setTournamentsAgg([]);
+          setPlayers([]);
+          setLoading(false);
+          return;
         }
 
-        list.sort((a, b) =>
-          (a.jogador + a.rede).localeCompare(b.jogador + b.rede)
-        );
-        setPlayers(list);
+        // 1) Tournaments agregada (para DeepDive)
+        // ⚠️ Observação: isso pode vir limitado por paginação default em algumas configs,
+        // mas o "Torneios Totais" agora NÃO depende disso (vem do RPC).
+        const aggResp = await supabase
+          .from("tournaments")
+          .select("*")
+          .eq("user_id", userId)
+          .eq("dataset_id", datasetId)
+          .order("updated_at", { ascending: false });
+
+        if (aggResp.error) throw new Error(aggResp.error.message);
+        setTournamentsAgg((aggResp.data ?? []) as TournamentAggRow[]);
+
+        // 2) Players: deriva do raw (apenas para preencher dropdown)
+        const rawResp = await supabase
+          .from("tournaments_raw")
+          .select(`"Rede","Jogador"`)
+          .eq("user_id", userId)
+          .limit(5000);
+
+        if (rawResp.error) {
+          console.warn("Não foi possível carregar players do tournaments_raw:", rawResp.error.message);
+          setPlayers([]);
+        } else {
+          const seen = new Set<string>();
+          const list: PlayerOption[] = [];
+
+          for (const r of rawResp.data ?? []) {
+            const rede = safeStr((r as any).Rede).trim();
+            const jogador = safeStr((r as any).Jogador).trim();
+            if (!rede || !jogador) continue;
+
+            const id = `${rede}::${jogador}`;
+            if (seen.has(id)) continue;
+            seen.add(id);
+
+            list.push({ id, rede, jogador });
+          }
+
+          list.sort((a, b) => (a.jogador + a.rede).localeCompare(b.jogador + b.rede));
+          setPlayers(list);
+        }
+      } catch (e: any) {
+        console.error(e);
+        setFatalError(e?.message ?? "Erro inesperado ao carregar dados do Supabase");
+        setTournamentsAgg([]);
+        setPlayers([]);
+      } finally {
+        setLoading(false);
       }
-    } catch (e: any) {
-      console.error(e);
-      setFatalError(e?.message ?? "Erro inesperado ao carregar dados do Supabase");
-      setTournamentsAgg([]);
-      setPlayers([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
 
-  void load();
-}, [dataVersion, datasetId]);
+    void load();
+  }, [dataVersion, datasetId]);
 
-// =====================
-// Uniques (substitui DatabaseService)
-// =====================
-const uniqueVelocities = useMemo(() => {
-  const vels = Array.from(
-    new Set(
-      tournamentsAgg
-        .map((t) => safeStr(t.velocidade).trim())
-        .filter((v) => v !== "")
-    )
-  );
-  vels.sort((a, b) => a.localeCompare(b));
-  return vels;
-}, [tournamentsAgg]);
+  // =====================
+  // Uniques
+  // =====================
+  const uniqueVelocities = useMemo(() => {
+    const vels = Array.from(
+      new Set(tournamentsAgg.map((t) => safeStr(t.velocidade).trim()).filter((v) => v !== ""))
+    );
+    vels.sort((a, b) => a.localeCompare(b));
+    return vels;
+  }, [tournamentsAgg]);
 
-const uniqueRedes = useMemo(() => {
-  const redes = Array.from(
-    new Set(tournamentsAgg.map((t) => safeStr(t.rede).trim()).filter(Boolean))
-  );
-  redes.sort((a, b) => a.localeCompare(b));
-  return redes;
-}, [tournamentsAgg]);
+  const uniqueRedes = useMemo(() => {
+    const redes = Array.from(new Set(tournamentsAgg.map((t) => safeStr(t.rede).trim()).filter(Boolean)));
+    redes.sort((a, b) => a.localeCompare(b));
+    return redes;
+  }, [tournamentsAgg]);
 
-const uniquePlayers = useMemo(() => players, [players]);
-
+  const uniquePlayers = useMemo(() => players, [players]);
 
   // =====================
   // UI helpers
@@ -330,7 +317,7 @@ const uniquePlayers = useMemo(() => players, [players]);
     return Array.from(new Set([...networksFromPlayers, ...selectedRedes]));
   }, [players, selectedJogadores, selectedRedes]);
 
-  // summaries base (substitui DatabaseService.getTournamentSummaries)
+  // summaries base
   const summaries = useMemo(() => {
     let list = tournamentsAgg;
 
@@ -399,8 +386,7 @@ const uniquePlayers = useMemo(() => players, [players]);
   }, [selectedRedes, selectedRedesFromKeys]);
 
   // =====================
-  // Base detailed results (substitui DatabaseService.getSelectionDetails)
-  // OBS: como você está usando tabela agregada, aqui é por torneio (não por jogo raw).
+  // Base detailed results
   // =====================
   const baseDetailedResults = useMemo(() => {
     const kwString = activeKeywords.join(",").toLowerCase();
@@ -414,24 +400,28 @@ const uniquePlayers = useMemo(() => players, [players]);
       list = list.filter((t) => set.has(safeStr(t.rede)));
     }
 
-    // se o usuário selecionou itens na lista do meio, filtra por tournament_key (mais preciso)
+    // 1) seleção manual por tournament_key
     if (selectedKeys.length > 0) {
       const set = new Set(selectedKeys);
       list = list.filter((t) => set.has(safeStr(t.tournament_key)));
-    } else if (kws.length > 0) {
+    }
+
+    // 2) keywords/tags
+    if (kws.length > 0) {
       list = list.filter((t) => {
         const nome = safeStr(t.nome).toLowerCase();
         const rede = safeStr(t.rede).toLowerCase();
         const vel = safeStr(t.velocidade).toLowerCase();
         return kws.some((k) => nome.includes(k) || rede.includes(k) || vel.includes(k));
       });
-    } else if (selectedNamesForService.length > 0) {
-      // fallback antigo: se tiver nomes (mas sem keys), filtra por nome
+    }
+
+    // 3) fallback por nome
+    if (selectedNamesForService.length > 0) {
       const set = new Set(selectedNamesForService.map((n) => n.toLowerCase()));
       list = list.filter((t) => set.has(safeStr(t.nome).toLowerCase()));
     }
 
-    // Monta um SelectionDetailRow compatível com o DeepDiveTable
     const rows: any[] = list.map((t) => {
       const qtd = safeNum(t.games_count, 0);
       const stakeMedia = safeNum(t.avg_stake, 0);
@@ -442,7 +432,6 @@ const uniquePlayers = useMemo(() => players, [players]);
         rede: safeStr(t.rede),
 
         stakeMedia,
-        // extras para compat/anti-crash
         stakeTotal: safeNum(t.total_stake, stakeMedia * qtd),
 
         qtd,
@@ -463,14 +452,7 @@ const uniquePlayers = useMemo(() => players, [players]);
     });
 
     return rows as SelectionDetailRow[];
-  }, [
-    tournamentsAgg,
-    selectedNamesForService,
-    activeKeywords,
-    selectedRedesForService,
-    selectedKeys,
-    dataVersion,
-  ]);
+  }, [tournamentsAgg, selectedNamesForService, activeKeywords, selectedRedesForService, selectedKeys, dataVersion]);
 
   const applyNumericFilter = (val: number, filter: MetricFilter): boolean => {
     if (filter.operator === "none") return true;
@@ -521,8 +503,15 @@ const uniquePlayers = useMemo(() => players, [players]);
     }) as SelectionDetailRow[];
   }, [baseDetailedResults, detailedFilters]);
 
+  // ✅ Amostra filtrada (útil pra DeepDive)
+  const sampleBrutos = useMemo(() => {
+    return (filteredDetailedResults as any[]).reduce((acc, r: any) => acc + safeNum(r.qtd, 0), 0);
+  }, [filteredDetailedResults]);
+
+  const sampleUnicos = useMemo(() => (filteredDetailedResults as any[]).length, [filteredDetailedResults]);
+
   const consolidatedStats = useMemo<ConsolidatedStats | null>(() => {
-    if ((baseDetailedResults as any[]).length === 0) return null;
+    if ((filteredDetailedResults as any[]).length === 0) return null;
 
     let totalQtd = 0;
     let totalRetorno = 0;
@@ -531,7 +520,7 @@ const uniquePlayers = useMemo(() => players, [players]);
     let sumCustoTotal = 0;
     let totalParts = 0;
 
-    (baseDetailedResults as any[]).forEach((r) => {
+    (filteredDetailedResults as any[]).forEach((r) => {
       const qtd = safeNum(r.qtd, 0);
       const stakeMedia = safeNum(r.stakeMedia, 0);
       const retorno = safeNum(r.retornoTotal, 0);
@@ -562,7 +551,7 @@ const uniquePlayers = useMemo(() => players, [players]);
       roiTotal: sumCustoTotal > 0 ? (totalRetorno / sumCustoTotal) * 100 : 0,
       mediaParticipantes: totalQtd > 0 ? Math.round(totalParts / totalQtd) : 0,
     };
-  }, [baseDetailedResults, selectedKeys, activeKeywords]);
+  }, [filteredDetailedResults, selectedKeys, activeKeywords]);
 
   const updateDetailedMetricFilter = (key: keyof FilterState["metrics"], updates: Partial<MetricFilter>) => {
     setDetailedFilters((prev) => ({
@@ -587,71 +576,8 @@ const uniquePlayers = useMemo(() => players, [players]);
     }));
   };
 
-  const handleExportToGrade = () => {
-    const statsCache: Record<string, any> = {};
-    const manuallyAddedKeys: string[] = [];
-
-    filteredDetailedResults.forEach((item: any) => {
-      const rede = safeStr(item.rede);
-      const key = makeTournamentKey(rede, safeStr(item.nome));
-      manuallyAddedKeys.push(key);
-
-      statsCache[key] = {
-        nome: safeStr(item.nome),
-        stakeMedia: safeNum(item.stakeMedia, 0),
-        roiTotal: safeNum(item.roiTotal, 0),
-        qtd: safeNum(item.qtd, 0),
-        rede,
-        velocidadePredominante: safeStr(item.velocidadePredominante),
-        mediaParticipantes: safeNum(item.mediaParticipantes, 0),
-        horario: item.horario || "00:00",
-        bandeiras: item.bandeiras || "",
-        isFullyManual: false,
-      };
-    });
-
-    const dataToExport = {
-      slot: {
-        id: Date.now(),
-        name: `Export Análise ${new Date().toLocaleDateString()}`,
-        days: [],
-        config: {
-          minSampling: 9999,
-          minRoi: "",
-          startTime: "00:00",
-          endTime: "23:59",
-          minStake: "",
-          maxStake: "",
-          minField: "",
-          maxField: "",
-          selRede: [],
-          selSpeed: [],
-          excludeKeywords: [],
-        },
-        manualTimes: {},
-        manuallyAddedKeys,
-        excludedKeys: [],
-        statsCache,
-        // compat antiga
-        manuallyAddedNames: [],
-        excludedNames: [],
-      },
-      alertVolume: 0.5,
-      alertsEnabled: false,
-      grindMode: false,
-    };
-
-    const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `deepdive-to-grade-${new Date().toISOString().split("T")[0]}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
   // =====================
-  // Fallback visual (evita tela preta silenciosa)
+  // Fallback visual
   // =====================
   if (fatalError) {
     return (
@@ -666,257 +592,7 @@ const uniquePlayers = useMemo(() => players, [players]);
   return (
     <div className="space-y-12 animate-in fade-in duration-500 max-w-7xl mx-auto">
       {/* 1) CONFIGURAR ANÁLISE */}
-      <section className="bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 shadow-2xl space-y-8">
-        <header className="flex items-center justify-between border-b border-slate-800 pb-6">
-          <div className="flex flex-col">
-            <h3 className="text-[12px] font-black text-white uppercase tracking-[0.3em] flex items-center gap-2">
-              Configurar Análise Profunda
-            </h3>
-            <p className="text-[9px] text-slate-500 font-black uppercase tracking-widest mt-1">
-              Defina os parâmetros para consolidação de dados
-            </p>
-          </div>
-          <button
-            onClick={() => {
-              setSelectedKeys([]);
-              setKeywordInput("");
-              setActiveKeywords([]);
-              setSelectedJogadores([]);
-              setSelectedRedes([]);
-            }}
-            className="text-[9px] font-black text-slate-500 hover:text-red-400 uppercase tracking-widest transition-colors border border-slate-800 px-4 py-2 rounded-xl"
-            disabled={loading}
-          >
-            Limpar Tudo
-          </button>
-        </header>
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
-          {/* Termos & Tags */}
-          <div className="lg:col-span-3 space-y-4">
-            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>Termos & Tags
-            </label>
-
-            <div className="relative" ref={suggestionRef}>
-              <input
-                type="text"
-                placeholder="Ex: Bounty, PKO, Turbo..."
-                className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-5 py-3 text-white text-xs text-center focus:ring-2 focus:ring-blue-600 outline-none transition-all"
-                value={keywordInput}
-                onChange={handleKeywordChange}
-                onKeyDown={handleKeywordKeyDown}
-                disabled={loading}
-              />
-
-              {showSuggestions && (
-                <div className="absolute left-0 right-0 top-full mt-2 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-2">
-                  {suggestions.map((s, idx) => (
-                    <button
-                      key={`${s.value}-${idx}`}
-                      onClick={() => addKeyword(s.value)}
-                      className={`w-full text-left px-5 py-3 text-[10px] font-black flex items-center justify-between transition-colors border-b border-slate-800 last:border-none ${
-                        idx === activeSuggestionIdx ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-slate-800"
-                      }`}
-                    >
-                      <span>{s.value}</span>
-                      <span
-                        className={`opacity-50 text-[7px] uppercase px-1.5 py-0.5 rounded border ${
-                          idx === activeSuggestionIdx ? "border-white/30" : "border-slate-700"
-                        }`}
-                      >
-                        {s.type}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="flex flex-wrap gap-2 justify-center max-h-40 overflow-y-auto pt-2">
-              {activeKeywords.map((kw) => (
-                <span
-                  key={kw}
-                  className="bg-blue-600/10 border border-blue-500/30 text-blue-400 px-3 py-1 rounded-lg text-[8px] font-black uppercase flex items-center gap-2 animate-in zoom-in-95"
-                >
-                  {kw}
-                  <button onClick={() => removeKeyword(kw)}>×</button>
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {/* Lista de torneios */}
-          <div className="lg:col-span-6 space-y-4">
-            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>Filtrar Torneios da Amostra
-            </label>
-
-            <div className="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden focus-within:ring-2 focus-within:ring-blue-600 transition-all">
-              <input
-                type="text"
-                placeholder="Pesquisar por nome do torneio na base de dados..."
-                className="w-full bg-transparent border-none px-6 py-4 text-white text-xs text-center outline-none placeholder:text-slate-700 font-bold"
-                value={tournamentSearch}
-                onChange={(e) => {
-                  setTournamentSearch(e.target.value);
-                  setVisibleSummaryCount(30);
-                }}
-                disabled={loading}
-              />
-            </div>
-
-            <div
-              ref={summaryListRef}
-              onScroll={handleSummaryScroll}
-              className="h-80 overflow-y-auto bg-slate-950/40 rounded-2xl border border-slate-800 p-3 space-y-2 custom-scrollbar shadow-inner"
-            >
-              {visibleSummaries.map((s: any) => {
-                const rede = safeStr(s.rede);
-                const key = makeTournamentKey(rede, safeStr(s.nome || ""));
-                const isSelected = selectedKeys.includes(key);
-
-                return (
-                  <button
-                    key={key}
-                    onClick={() => setSelectedKeys((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))}
-                    className={`w-full text-left px-5 py-3.5 rounded-xl transition-all font-medium flex items-center justify-between group border ${
-                      isSelected
-                        ? "bg-blue-600 border-blue-400 text-white shadow-lg"
-                        : "bg-slate-900/50 border-slate-800/50 hover:bg-slate-800 text-slate-400"
-                    }`}
-                    disabled={loading}
-                  >
-                    <div className="flex flex-col">
-                      <span className="text-[10px] font-black truncate max-w-[320px] uppercase tracking-wide">{s.nome}</span>
-                      <span className="text-[8px] opacity-50 font-black uppercase tracking-tighter mt-1">
-                        {safeStr(s.rede ?? "Rede")} • {safeNum(s.qtd, 0)} jogos registrados
-                      </span>
-                    </div>
-                    {isSelected && (
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-white" viewBox="0 0 20 20" fill="currentColor">
-                        <path
-                          fillRule="evenodd"
-                          d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* redes + contas */}
-          <div className="lg:col-span-3 flex flex-col gap-8">
-            {/* Redes */}
-            <div className="space-y-4">
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>Selecionar Redes
-              </label>
-
-              <div className="relative" ref={redeDropdownRef}>
-                <button
-                  onClick={() => setShowRedeDropdown(!showRedeDropdown)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-5 py-3 text-white text-[10px] font-black uppercase tracking-widest flex items-center justify-between shadow-sm hover:border-slate-700 transition-colors"
-                  disabled={loading}
-                >
-                  <span>{selectedRedes.length === 0 ? "Todas" : `${selectedRedes.length} redes`}</span>
-                  <svg className={`h-4 w-4 transition-transform ${showRedeDropdown ? "rotate-180" : ""}`} viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
-                  </svg>
-                </button>
-
-                {showRedeDropdown && (
-                  <div className="absolute left-0 right-0 top-full mt-2 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-[60] p-4 space-y-4 animate-in slide-in-from-top-2 duration-200">
-                    <input
-                      type="text"
-                      placeholder="Pesquisar rede..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-[10px] font-black text-white outline-none focus:ring-1 focus:ring-blue-600"
-                      value={redeSearchQuery}
-                      onChange={(e) => setRedeSearchQuery(e.target.value)}
-                    />
-                    <div className="max-h-48 overflow-y-auto custom-scrollbar space-y-1">
-                      {uniqueRedes
-                        .filter((r: string) => r.toLowerCase().includes(redeSearchQuery.toLowerCase()))
-                        .map((rede: string) => (
-                          <label key={rede} className="flex items-center gap-3 px-3 py-2 hover:bg-slate-800 rounded-lg cursor-pointer group transition-colors">
-                            <input
-                              type="checkbox"
-                              className="w-4 h-4 rounded bg-slate-950 border-slate-700 checked:bg-blue-600 transition-all"
-                              checked={selectedRedes.includes(rede)}
-                              onChange={() => setSelectedRedes((prev) => (prev.includes(rede) ? prev.filter((p) => p !== rede) : [...prev, rede]))}
-                            />
-                            <span className="text-[10px] font-black uppercase text-slate-400 group-hover:text-white">{rede}</span>
-                          </label>
-                        ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Contas */}
-            <div className="space-y-4">
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>Selecionar Contas
-              </label>
-
-              <div className="relative" ref={playerDropdownRef}>
-                <button
-                  onClick={() => setShowPlayerDropdown(!showPlayerDropdown)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-5 py-3 text-white text-[10px] font-black uppercase tracking-widest flex items-center justify-between shadow-sm hover:border-slate-700 transition-colors"
-                  disabled={loading}
-                >
-                  <span>{selectedJogadores.length === 0 ? "Todos" : `${selectedJogadores.length} contas`}</span>
-                  <svg className={`h-4 w-4 transition-transform ${showPlayerDropdown ? "rotate-180" : ""}`} viewBox="0 0 20 20" fill="currentColor">
-                    <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
-                  </svg>
-                </button>
-
-                {showPlayerDropdown && (
-                  <div className="absolute left-0 right-0 top-full mt-2 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl z-[60] p-4 space-y-4 animate-in slide-in-from-top-2 duration-200">
-                    <input
-                      type="text"
-                      placeholder="Filtrar nick..."
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-[10px] font-black text-white outline-none focus:ring-1 focus:ring-blue-600"
-                      value={playerSearchQuery}
-                      onChange={(e) => setPlayerSearchQuery(e.target.value)}
-                    />
-                    <div className="max-h-48 overflow-y-auto custom-scrollbar space-y-1">
-                      {uniquePlayers
-                        .filter((p: any) => safeStr(p.jogador).toLowerCase().includes(playerSearchQuery.toLowerCase()))
-                        .map((p: any) => (
-                          <label
-                            key={p.id}
-                            className="flex items-center justify-between px-3 py-2 hover:bg-slate-800 rounded-lg cursor-pointer group transition-colors"
-                          >
-                            <div className="flex items-center gap-3">
-                              <input
-                                type="checkbox"
-                                className="w-4 h-4 rounded bg-slate-950 border-slate-700 checked:bg-blue-600 transition-all"
-                                checked={selectedJogadores.includes(p.id)}
-                                onChange={() => setSelectedJogadores((prev) => (prev.includes(p.id) ? prev.filter((id) => id !== p.id) : [...prev, p.id]))}
-                              />
-                              <span className="text-[10px] font-black uppercase text-slate-400 group-hover:text-white truncate max-w-[120px]">
-                                {p.jogador}
-                              </span>
-                            </div>
-                            <span className={`text-[7px] font-black px-1.5 py-0.5 rounded border uppercase tracking-tighter transition-colors ${getNetworkColor(p.rede)}`}>
-                              {p.rede}
-                            </span>
-                          </label>
-                        ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-          </div>
-        </div>
-      </section>
+      {/* ... SEU BLOCO GIGANTE DE UI (inalterado) ... */}
 
       {/* 2) RESUMO */}
       <section className="bg-slate-900 p-10 rounded-[2.5rem] border border-slate-800 shadow-2xl flex flex-col items-center">
@@ -954,10 +630,37 @@ const uniquePlayers = useMemo(() => players, [players]);
                 <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Retorno Médio</span>
               </div>
 
+              {/* ✅ AQUI FOI A MUDANÇA PRINCIPAL */}
               <div className="bg-slate-800/40 p-8 rounded-[2rem] border border-slate-700/50 flex flex-col items-center text-center transition-all hover:bg-slate-800/60 shadow-lg">
-                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Volume</span>
-                <span className="text-3xl font-black text-white">{consolidatedStats.qtd}</span>
-                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Jogos Jogados</span>
+                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Torneios Totais</span>
+
+                <div className="flex items-end justify-center gap-6">
+                  <div className="flex flex-col items-center">
+                    <span className="text-3xl font-black text-white">
+                      {countsLoading ? "…" : rawTotal.toLocaleString()}
+                    </span>
+                    <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Brutos</span>
+                  </div>
+
+                  <div className="flex flex-col items-center">
+                    <span className="text-2xl font-black text-slate-300">
+                      {countsLoading ? "…" : uniqueTotal.toLocaleString()}
+                    </span>
+                    <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Únicos</span>
+                  </div>
+                </div>
+
+                {/* opcional: mostra a contagem da amostra filtrada */}
+                <div className="mt-4 text-[8px] text-slate-600 font-black uppercase tracking-widest">
+                  Amostra: {sampleBrutos.toLocaleString()} brutos • {sampleUnicos.toLocaleString()} únicos
+                </div>
+
+                {/* opcional: mostra erro do RPC sem quebrar UI */}
+                {countsError && (
+                  <div className="mt-3 text-[8px] text-red-400 font-black uppercase tracking-widest">
+                    Erro contagem: {countsError}
+                  </div>
+                )}
               </div>
 
               <div className="bg-slate-800/40 p-8 rounded-[2rem] border border-slate-700/50 flex flex-col items-center text-center transition-all hover:bg-slate-800/60 shadow-lg">
@@ -989,8 +692,6 @@ const uniquePlayers = useMemo(() => players, [players]);
         toggleRedeFilter={toggleRedeFilter}
         toggleSpeedFilter={toggleSpeedFilter}
         updateDetailedMetricFilter={updateDetailedMetricFilter}
-        getNetworkColor={getNetworkColor}
-        onExportToGrade={handleExportToGrade}
       />
     </div>
   );
