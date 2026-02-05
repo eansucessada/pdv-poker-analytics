@@ -16,7 +16,6 @@ import GradeManualAdd from './GradeManualAdd';
 import GradeManualModal from './GradeManualModal';
 import GradeImportModal from './GradeImportModal';
 
-
 const ALERT_SOUND_URL = 'https://assets.mixkit.co/active_storage/sfx/951/951-preview.mp3';
 
 const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }) => {
@@ -186,13 +185,55 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
     const excludedKeys = new Set((activeSlot.excludedKeys ?? []).map(k => String(k)));
     const excludeTerms = (cfg.excludeKeywords ?? []).map(k => k.trim().toLowerCase()).filter(Boolean);
 
+    // Normaliza o shape do item vindo do Supabase (tabela `tournaments`) ou de versões antigas.
+    // Objetivo: a Grade usar o Supabase como fonte única de métricas.
+    const normalizeBaseItem = (it: any) => {
+      const rede = String(it?.rede ?? it?.Rede ?? '');
+      const nome = String(it?.nome ?? it?.Nome ?? '');
+      const tournamentKey = String(
+        it?.tournamentKey ??
+          it?.tournament_key ??
+          it?.tournamentKeyStr ??
+          (rede && nome ? makeTournamentKey(rede, nome) : '')
+      );
+
+      return {
+        // chave
+        tournamentKey,
+
+        // identidade
+        nome,
+        rede,
+
+        // métricas (do Supabase)
+        stakeMedia: toNum(it?.stakeMedia ?? it?.avg_stake ?? it?.avgStake),
+        qtd: toNum(it?.qtd ?? it?.games_count ?? it?.gamesCount),
+        roiTotal: toNum(it?.roiTotal ?? it?.roi_total_pct ?? it?.roiTotalPct),
+        roiMedio: toNum(it?.roiMedio ?? it?.roi_avg_pct ?? it?.roiAvgPct ?? it?.roi_total_pct),
+        retornoTotal: toNum(it?.retornoTotal ?? it?.total_profit ?? it?.totalProfit),
+        itm: toNum(it?.itm ?? it?.itm_count ?? it?.itmCount),
+        itmPercentual: toNum(it?.itmPercentual ?? it?.itm_pct ?? it?.itmPct),
+        mediaParticipantes: toNum(it?.mediaParticipantes ?? it?.field_avg ?? it?.fieldAvg),
+
+        // atributos
+        velocidadePredominante: String(it?.velocidadePredominante ?? it?.velocidade ?? ''),
+        horario: String(it?.horario ?? it?.hora_str ?? it?.horaStr ?? '00:00'),
+        bandeiras: String(it?.bandeiras ?? ''),
+
+        // flags
+        isFullyManual: !!it?.isFullyManual,
+        isFromCache: !!it?.isFromCache
+      };
+    };
+
     // 1) Base items do Supabase (enriquecer com horarioManual)
     const byKey = new Map<string, any>();
     (baseGradeItems ?? []).forEach((it: any) => {
-      const k = String(it.tournamentKey ?? it.tournament_key ?? '');
+      const norm = normalizeBaseItem(it);
+      const k = String(norm.tournamentKey ?? '');
       if (!k) return;
       const horarioManual = activeSlot.manualTimes?.[k] ?? '';
-      byKey.set(k, { ...it, tournamentKey: k, horarioManual });
+      byKey.set(k, { ...norm, horarioManual, isFullyManual: false, isFromCache: false });
     });
 
     // 2) Injetar manuais (mesmo se não existirem no Supabase)
@@ -299,8 +340,6 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
     activeSlot.statsCache
   ]);
 
-
-
   // alerts
   useGradeAlerts({
     enabled: alertsEnabled,
@@ -342,9 +381,11 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
   const allTournamentPairs = useMemo(() => {
     const set = new Map<string, { key: string; nome: string; rede: string }>();
     (fullGradeDataPool ?? []).forEach((t: any) => {
-
-      const key = makeTournamentKey(t.rede, t.nome);
-      if (!set.has(key)) set.set(key, { key, nome: t.nome, rede: t.rede });
+      const rede = String(t?.rede ?? '');
+      const nome = String(t?.nome ?? '');
+      const key = String(t?.tournamentKey ?? t?.tournament_key ?? (rede && nome ? makeTournamentKey(rede, nome) : ''));
+      if (!key) return;
+      if (!set.has(key)) set.set(key, { key, nome, rede });
     });
     return Array.from(set.values()).sort((a, b) => (a.nome + a.rede).localeCompare(b.nome + b.rede));
   }, [fullGradeDataPool]);
@@ -483,7 +524,6 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
 
   return (
     <div className="space-y-6 animate-in fade-in duration-700 max-w-7xl mx-auto">
-
       <GradeManualModal
         open={isManualModalOpen}
         pendingTournamentName={pendingTournamentName}
@@ -557,19 +597,6 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
         manuallyAddedKeys={activeSlot.manuallyAddedKeys}
         onManualTimeCommit={handleManualTimeCommit}
         onRemove={handleRemoveTournament}
-      />
-
-      <GradeManualAdd
-        manualSearch={manualSearch}
-        setManualSearch={setManualSearch}
-        showManualSuggestions={showManualSuggestions}
-        manualSuggestions={manualSuggestions}
-        activeSuggestionIdx={activeSuggestionIdx}
-        setActiveSuggestionIdx={setActiveSuggestionIdx}
-        onSearchChange={handleManualSearchChange}
-        onKeyDown={handleManualAddKeyDown}
-        onPickSuggestion={startManualTournamentAdditionFromPair}
-        onCreateCustom={startManualTournamentAdditionCustom}
       />
     </div>
   );

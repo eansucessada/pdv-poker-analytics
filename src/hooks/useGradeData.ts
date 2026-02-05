@@ -10,7 +10,9 @@ export type TournamentAggRow = {
 
   rede: string;
   nome: string;
-  velocidade: string | null; // ✅ agora vem do agregado
+
+  velocidade: string | null;
+  horario: string | null;
 
   games_count: number;
 
@@ -27,13 +29,12 @@ export type TournamentAggRow = {
   roi_avg_pct: number;
 
   field_avg: number | null;
-  first_played_at: string | null; // date
-  last_played_at: string | null; // date
-  updated_at: string; // timestamptz
+  first_played_at: string | null;
+  last_played_at: string | null;
+  updated_at: string;
 };
 
-// ⚠️ Por enquanto mantemos "any" para não quebrar seu app.
-// Depois encaixamos seu FilterState oficial.
+// ⚠️ Mantido por compatibilidade (se você usa isso em algum lugar)
 type FilterState = any;
 
 export function useGradeData(datasetId: number, dataVersion: number) {
@@ -42,121 +43,119 @@ export function useGradeData(datasetId: number, dataVersion: number) {
   const [ready, setReady] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Mantém contrato atual do app
+  // Mantém contrato atual do app (se você quiser aplicar filtros no hook no futuro)
   const [filters, setFilters] = useState<FilterState>({});
-  // Opções úteis para filtros (se você quiser usar direto do hook)
+
+  // Opções úteis para filtros
   const [allRedes, setAllRedes] = useState<string[]>([]);
   const [uniqueVelocidades, setUniqueVelocidades] = useState<string[]>([]);
 
   const refresh = useCallback(async () => {
-  setLoading(true);
-  setError(null);
+    setLoading(true);
+    setError(null);
 
-  try {
-    const userId = await getUserId();
+    try {
+      const userId = await getUserId();
 
-    // Sem login => não carrega nada (evita erro e vazamento)
-    // (Quando o usuário logar, a gente recarrega via onAuthStateChange)
-    if (!userId) {
+      // Sem login => não carrega nada
+      if (!userId) {
+        setRowsRaw([]);
+        setAllRedes([]);
+        setUniqueVelocidades([]);
+        return;
+      }
+
+      // ✅ Fonte única: tabela agregada `public.tournaments`
+      const { data, error: dbErr } = await supabase
+        .from("tournaments")
+        .select(
+          [
+            "user_id",
+            "dataset_id",
+            "tournament_key",
+            "rede",
+            "nome",
+            "velocidade",
+            "horario",
+            "games_count",
+            "total_profit",
+            "avg_profit",
+            "total_stake",
+            "avg_stake",
+            "itm_count",
+            "itm_pct",
+            "roi_total_pct",
+            "roi_avg_pct",
+            "field_avg",
+            "first_played_at",
+            "last_played_at",
+            "updated_at",
+          ].join(",")
+        )
+        .eq("user_id", userId)
+        .eq("dataset_id", datasetId)
+        .order("updated_at", { ascending: false });
+
+      if (dbErr) throw dbErr;
+
+      const rows = (data ?? []) as TournamentAggRow[];
+      setRowsRaw(rows);
+
+      const redes = Array.from(new Set(rows.map((r) => r.rede).filter(Boolean)));
+      redes.sort((a, b) => a.localeCompare(b));
+      setAllRedes(redes);
+
+      const velocidades = Array.from(
+        new Set(rows.map((r) => (r.velocidade ?? "").trim()).filter(Boolean))
+      );
+      velocidades.sort((a, b) => a.localeCompare(b));
+      setUniqueVelocidades(velocidades);
+    } catch (e: any) {
+      setError(e?.message ?? "Erro ao carregar tournaments do Supabase");
       setRowsRaw([]);
       setAllRedes([]);
       setUniqueVelocidades([]);
-      return;
+    } finally {
+      setLoading(false);
+      setReady(true);
     }
+  }, [datasetId]);
 
-    const { data, error: dbErr } = await supabase
-      .from("tournaments")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("dataset_id", datasetId)
-      .order("updated_at", { ascending: false });
-
-    if (dbErr) throw dbErr;
-
-    const rows = (data ?? []) as TournamentAggRow[];
-    setRowsRaw(rows);
-
-    const redes = Array.from(new Set(rows.map((r) => r.rede).filter(Boolean)));
-    redes.sort((a, b) => a.localeCompare(b));
-    setAllRedes(redes);
-
-    const velocidades = Array.from(
-      new Set(rows.map((r) => (r.velocidade ?? "").trim()).filter(Boolean))
-    );
-    velocidades.sort((a, b) => a.localeCompare(b));
-    setUniqueVelocidades(velocidades);
-  } catch (e: any) {
-    setError(e?.message ?? "Erro ao carregar tournaments do Supabase");
-    setRowsRaw([]);
-    setAllRedes([]);
-    setUniqueVelocidades([]);
-  } finally {
-    setLoading(false);
-    setReady(true);
-  }
-}, [datasetId]);
-// Recarrega automaticamente quando o usuário faz login/logout
-useEffect(() => {
-  const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-    if (session?.user?.id) {
-      void refresh();
-    } else {
-      setRowsRaw([]);
-      setAllRedes([]);
-      setUniqueVelocidades([]);
-    }
-  });
-
-  return () => {
-    data.subscription.unsubscribe();
-  };
-}, [refresh]);
-
+  // Recarrega automaticamente quando o usuário faz login/logout
   useEffect(() => {
-    void refresh();
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user?.id) {
+        void refresh();
+      } else {
+        setRowsRaw([]);
+        setAllRedes([]);
+        setUniqueVelocidades([]);
+      }
+    });
+
+    return () => {
+      data.subscription.unsubscribe();
+    };
   }, [refresh]);
 
-  // 🔹 Por enquanto sem filtros (apenas retorna tudo).
-  // Depois a gente aplica os filtros reais aqui usando FilterState.
-  const filteredRows = useMemo(() => {
-  return rowsRaw.map((r) => ({
-  horario: (r as any).horario ?? "00:00",
-horarioManual: "",
-  tournamentKey: r.tournament_key,
-  rede: r.rede,
-  nome: r.nome,
-  velocidade: r.velocidade ?? "Normal",
-  qtd: r.games_count,
-  stakeMedia: r.avg_stake,
-  stakeTotal: r.total_stake,
-  lucroTotal: r.total_profit,
-  lucroMedio: r.avg_profit,
-  itm: r.itm_count,
-  itmPercentual: r.itm_pct,
-  roiTotal: r.roi_total_pct,
-  roiMedio: r.roi_avg_pct,
-  fieldMedio: r.field_avg ?? 0,
-  firstPlayedAt: r.first_played_at,
-  lastPlayedAt: r.last_played_at,
+  // ✅ Recarrega quando:
+  // - muda datasetId
+  // - muda dataVersion (import/purge)
+  useEffect(() => {
+    void refresh();
+  }, [refresh, dataVersion]);
 
-  // ✅ faltavam estes:
-  retornoTotal: r.total_profit + r.total_stake,
-  velocidadePredominante: r.velocidade ?? "Normal",
-  mediaParticipantes: r.field_avg ?? 0,
-  bandeiras: "",
-}));
+  // Aqui a gente NÃO recalcula métricas. Só entrega o que veio do Supabase.
+  const rows = rowsRaw;
+  const items = rowsRaw;      // pool para sugestões na Grade
+  const gradeItems = rowsRaw; // base para montar gradeData no GradeView
 
-}, [rowsRaw]);
-
-
-  // Aliases de compatibilidade (evita tela preta)
-const rows = filteredRows;
-const items = filteredRows;
-const gradeItems = filteredRows;
-
+  const count = useMemo(() => {
+    return rowsRaw.reduce((acc, r) => acc + (Number.isFinite(r.games_count) ? r.games_count : 0), 0);
+  }, [rowsRaw]);
 
   return {
-    // dados
+    // dados (Supabase source of truth)
     rows,
     items,
     gradeItems,
@@ -164,15 +163,14 @@ const gradeItems = filteredRows;
     // extras úteis
     allRedes,
     uniqueVelocidades,
- count: filteredRows.reduce((acc: number, x: any) => acc + (x.qtd || 0), 0),
-
+    count,
 
     // estado
     loading,
     ready,
     error,
 
-    // filtros
+    // filtros (reservado)
     filters,
     setFilters,
 
