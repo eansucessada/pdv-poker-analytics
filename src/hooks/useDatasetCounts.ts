@@ -8,7 +8,7 @@ type Result = {
   error: string | null;
 };
 
-export function useDatasetCounts(datasetId: number): Result {
+export function useDatasetCounts(datasetId: number, refreshKey: number = 0): Result {
   const [raw, setRaw] = useState(0);
   const [unique, setUnique] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -50,7 +50,7 @@ export function useDatasetCounts(datasetId: number): Result {
     return () => {
       cancelled = true;
     };
-  }, [datasetId]);
+  }, [datasetId, refreshKey]);
 
   return { raw, unique, loading, error };
 }

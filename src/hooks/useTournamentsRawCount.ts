@@ -26,7 +26,7 @@ export function useTournamentsRawCount({
   const keysStable = useMemo(() => {
     const clean = (tournamentKeys || []).map((k) => k.trim()).filter(Boolean);
     return Array.from(new Set(clean));
-  }, [tournamentKeys]);
+  }, [datasetId, keysStable, enabled]);
 
   useEffect(() => {
     let cancelled = false;

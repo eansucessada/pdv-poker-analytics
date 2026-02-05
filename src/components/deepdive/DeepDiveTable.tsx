@@ -92,9 +92,10 @@ export interface DeepDiveTableProps {
   toggleRedeFilter: (rede: string) => void;
   toggleSpeedFilter: (speed: string) => void;
   updateDetailedMetricFilter: (key: keyof FilterState['metrics'], updates: Partial<MetricFilter>) => void;
-  getNetworkColor?: (rede: string) => string;
 
-  onExportToGrade?: () => void;
+  getNetworkColor: (rede: string) => string;
+
+  onExportToGrade: () => void;
 }
 
 const DeepDiveTable: React.FC<DeepDiveTableProps> = ({
@@ -107,8 +108,8 @@ const DeepDiveTable: React.FC<DeepDiveTableProps> = ({
   toggleRedeFilter,
   toggleSpeedFilter,
   updateDetailedMetricFilter,
-  getNetworkColor = () => '',
-  onExportToGrade = () => {},
+  getNetworkColor,
+  onExportToGrade,
 }) => {
   const [showRedeFilterDropdown, setShowRedeFilterDropdown] = useState(false);
   const [showSpeedFilterDropdown, setShowSpeedFilterDropdown] = useState(false);
