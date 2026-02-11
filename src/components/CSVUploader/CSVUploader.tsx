@@ -12,7 +12,7 @@ interface CSVUploaderProps {
 
 const CONVERSION_RATES: Record<string, number> = {
   USD: 1.0,
-  EUR: 1.08,
+  EUR: 1.0,
   GBP: 1.27,
   BRL: 0.18
 };

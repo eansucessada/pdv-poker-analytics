@@ -4,6 +4,7 @@ import { getUserId } from "../../services/auth";
 import type { FilterState, MetricFilter } from "../../types/common";
 import type { ConsolidatedStats, SelectionDetailRow } from "../../types/deepdive";
 import DeepDiveTable from "./DeepDiveTable";
+import { useDatasetCounts } from "../../hooks/useDatasetCounts";
 
 export interface DeepDiveViewProps {
   dataVersion: number;
@@ -94,6 +95,11 @@ const DeepDiveView: React.FC<DeepDiveViewProps> = ({ dataVersion, datasetId }) =
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [keywordInput, setKeywordInput] = useState("");
   const [activeKeywords, setActiveKeywords] = useState<string[]>([]);
+
+  // Dataset totals (Brutos/Únicos) - Supabase RPC
+  const { raw: rawDataset, unique: uniqueDataset } = useDatasetCounts(datasetId, dataVersion);
+  const totalBrutoDataset = rawDataset;
+  const totalUnicosDataset = uniqueDataset;
   const [selectedRedes, setSelectedRedes] = useState<string[]>([]);
   const [selectedJogadores, setSelectedJogadores] = useState<string[]>([]);
   const [tournamentSearch, setTournamentSearch] = useState("");
@@ -1018,7 +1024,7 @@ const consolidatedStats = useMemo<ConsolidatedStatsExt | null>(() => {
 
               <div className="bg-slate-800/40 p-8 rounded-[2rem] border border...ter text-center transition-all hover:bg-slate-800/60 shadow-lg">
                 <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">ROI Total</span>
-                <span className={`text-3xl font-black ${consolidatedStats.roiTotal >= 0 ? "text-green-400" : "text-red-500"}`}>
+                <span className={`text-3xl font-black whitespace-nowrap ${consolidatedStats.roiTotal >= 0 ? "text-green-400" : "text-red-500"}`}>
                   {consolidatedStats.roiTotal.toFixed(1)}%
                 </span>
                 <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Retorno Total</span>
@@ -1026,7 +1032,7 @@ const consolidatedStats = useMemo<ConsolidatedStatsExt | null>(() => {
 
               <div className="bg-slate-800/40 p-8 rounded-[2rem] border border-slate-700/50 flex flex-col items-center text-center transition-all hover:bg-slate-800/60 shadow-lg">
                 <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">ROI Médio</span>
-                <span className={`text-3xl font-black ${consolidatedStats.roiMedio >= 0 ? "text-green-400" : "text-red-500"}`}>
+                <span className={`text-3xl font-black whitespace-nowrap ${consolidatedStats.roiMedio >= 0 ? "text-green-400" : "text-red-500"}`}>
                   {consolidatedStats.roiMedio.toFixed(1)}%
                 </span>
                 <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Média por Torneio</span>
@@ -1038,11 +1044,15 @@ const consolidatedStats = useMemo<ConsolidatedStatsExt | null>(() => {
                 <div className="flex items-end justify-center gap-6">
                   <div className="flex flex-col items-center">
                     <span className="text-3xl font-black text-white">{totalBrutoFiltrado}</span>
-                    <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Brutos</span>
+                    <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Filtro</span>
+                    <span className="text-[11px] text-slate-300 font-black mt-2">{totalBrutoDataset}</span>
+                    <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest">Dataset</span>
                   </div>
                   <div className="flex flex-col items-center">
                     <span className="text-2xl font-black text-slate-300">{totalUnicosFiltrado}</span>
-                    <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Únicos</span>
+                    <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Filtro</span>
+                    <span className="text-[11px] text-slate-300 font-black mt-2">{totalUnicosDataset}</span>
+                    <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest">Dataset</span>
                   </div>
                 </div>
               </div>

@@ -458,16 +458,45 @@ const DeepDiveView: React.FC<DeepDiveViewProps> = ({ dataVersion }) => {
     let totalRetorno = 0;
     let totalItmCount = 0;
     let weightedStakeSum = 0;
-    let sumCustoTotal = 0;
-    let totalParts = 0;
 
+    // ROI Total (oficial): média ponderada de ROI por torneio (qtd>=4), pondera por qtd
+    let roiTotalWeightedNum = 0;
+    let roiTotalWeightedDen = 0;
+
+    const partsVals: number[] = [];
+    const partsWeights: number[] = [];
+
+    const weightedMedian = (values: number[], weights: number[]) => {
+      const pairs = values
+        .map((v, i) => ({ v: Number(v), w: Number(weights[i] ?? 0) }))
+        .filter((p) => Number.isFinite(p.v) && Number.isFinite(p.w) && p.w > 0)
+        .sort((a, b) => a.v - b.v);
+      if (pairs.length === 0) return 0;
+      const totalW = pairs.reduce((s, p) => s + p.w, 0);
+      if (totalW <= 0) return 0;
+      const half = totalW / 2;
+      let acc = 0;
+      for (const p of pairs) {
+        acc += p.w;
+        if (acc >= half) return p.v;
+      }
+      return pairs[pairs.length - 1].v;
+    };
+    
     (baseDetailedResults as any[]).forEach((r) => {
       totalQtd += r.qtd;
       totalRetorno += r.retornoTotal;
       totalItmCount += r.itm;
       weightedStakeSum += r.stakeMedia * r.qtd;
-      sumCustoTotal += r.stakeMedia * 1.1 * r.qtd;
-      totalParts += r.mediaParticipantes * r.qtd;
+
+      // ROI Total (oficial): ponderado por qtd, apenas torneios com 4+ ocorrências
+      if (r.qtd >= 4) {
+        roiTotalWeightedNum += r.roiTotal * r.qtd;
+        roiTotalWeightedDen += r.qtd;
+      }
+      // participants: weighted median
+      partsVals.push(r.mediaParticipantes);
+      partsWeights.push(r.qtd);
     });
 
     return {
@@ -483,8 +512,8 @@ const DeepDiveView: React.FC<DeepDiveViewProps> = ({ dataVersion }) => {
       qtd: totalQtd,
       itmPercentual: totalQtd > 0 ? (totalItmCount / totalQtd) * 100 : 0,
       retornoTotal: totalRetorno,
-      roiTotal: sumCustoTotal > 0 ? (totalRetorno / sumCustoTotal) * 100 : 0,
-      mediaParticipantes: totalQtd > 0 ? Math.round(totalParts / totalQtd) : 0,
+      roiTotal: roiTotalWeightedDen > 0 ? roiTotalWeightedNum / roiTotalWeightedDen : 0,
+      mediaParticipantes: Math.round(weightedMedian(partsVals, partsWeights)),
     };
   }, [baseDetailedResults, selectedKeys, activeKeywords]);
 

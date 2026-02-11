@@ -4,6 +4,7 @@ import type { FilterState } from '../../types/common';
 import type { GradeConfig, GradeViewProps } from '../../types/grade';
 import { useGradeSlots, DEFAULT_GRADE_CONFIG } from '../../hooks/useGradeSlots';
 import { useGradeData } from '../../hooks/useGradeData';
+import { useDatasetCounts } from '../../hooks/useDatasetCounts';
 import { useGradeImportExport } from '../../hooks/useGradeImportExport';
 import { useGradeAlerts } from '../../hooks/useGradeAlerts';
 import { getHHMM, subtractMinutes } from '../../utils/time';
@@ -143,6 +144,8 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
   // data (pool base vindo do Supabase)
   const { gradeItems: baseGradeItems = [], items: fullGradeDataPool = [], allRedes, uniqueVelocidades, loading, ready, error } = useGradeData(datasetId, dataVersion);
 
+  const { raw: datasetRawCount, unique: datasetUniqueCount, loading: datasetCountsLoading } = useDatasetCounts(datasetId, dataVersion);
+
   // =====================
   // Aplicar configuração da Grade (filtros + exclusões + manuais)
   // =====================
@@ -209,7 +212,7 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
         stakeMedia: toNum(it?.stakeMedia ?? it?.avg_stake ?? it?.avgStake),
         qtd: toNum(it?.qtd ?? it?.games_count ?? it?.gamesCount),
         roiTotal: toNum(it?.roiTotal ?? it?.roi_total_pct ?? it?.roiTotalPct),
-        roiMedio: toNum(it?.roiMedio ?? it?.roi_avg_pct ?? it?.roiAvgPct ?? it?.roi_total_pct),
+        roiMedio: toNum(it?.roiMedio ?? it?.roi_total_pct ?? it?.roiTotalPct ?? it?.roi_avg_pct ?? it?.roiAvgPct),
         retornoTotal: toNum(it?.retornoTotal ?? it?.total_profit ?? it?.totalProfit),
         itm: toNum(it?.itm ?? it?.itm_count ?? it?.itmCount),
         itmPercentual: toNum(it?.itmPercentual ?? it?.itm_pct ?? it?.itmPct),
@@ -339,6 +342,12 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
     activeSlot.manualTimes,
     activeSlot.statsCache
   ]);
+
+  const filtroBrutos = useMemo(() => {
+    return gradeData.reduce((acc: number, r: any) => acc + (Number.isFinite(r.games_count) ? r.games_count : 0), 0);
+  }, [gradeData]);
+
+  const filtroUnicos = useMemo(() => gradeData.length, [gradeData]);
 
   // alerts
   useGradeAlerts({
@@ -548,7 +557,42 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
         onCancel={() => setShowImportOptions(false)}
       />
 
-      <GradeHeader
+      
+      <div className="bg-slate-800/40 border border-slate-800/60 rounded-[2rem] p-6 shadow-lg">
+        <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3 text-center">Torneios Totais</div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div className="text-center">
+            <div className="text-[9px] text-slate-500 font-black uppercase tracking-widest mb-2">Dataset</div>
+            <div className="flex items-end justify-center gap-6">
+              <div className="flex flex-col items-center">
+                <span className="text-3xl font-black text-white">{datasetCountsLoading ? "…" : datasetRawCount}</span>
+                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Brutos</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span className="text-2xl font-black text-slate-300">{datasetCountsLoading ? "…" : datasetUniqueCount}</span>
+                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Únicos</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="text-center">
+            <div className="text-[9px] text-slate-500 font-black uppercase tracking-widest mb-2">Filtro</div>
+            <div className="flex items-end justify-center gap-6">
+              <div className="flex flex-col items-center">
+                <span className="text-3xl font-black text-white">{filtroBrutos}</span>
+                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Brutos</span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span className="text-2xl font-black text-slate-300">{filtroUnicos}</span>
+                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Únicos</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+<GradeHeader
         slots={slots}
         activeSlotId={activeSlotId}
         activeSlot={activeSlot}

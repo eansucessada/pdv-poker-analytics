@@ -98,7 +98,9 @@ export function useGradeData(datasetId: number, dataVersion: number) {
 
       if (dbErr) throw dbErr;
 
-      const rows = (data ?? []) as TournamentAggRow[];
+      // Alguns projetos com tipagem gerada do Supabase podem inferir `data` como um tipo de erro genérico.
+      // Para evitar false-positives do TS aqui, fazemos o cast passando por `unknown`.
+      const rows = (data ?? []) as unknown as TournamentAggRow[];
       setRowsRaw(rows);
 
       const redes = Array.from(new Set(rows.map((r) => r.rede).filter(Boolean)));
