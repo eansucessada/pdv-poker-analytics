@@ -31,6 +31,18 @@ const extractHora = (dataStr: string): string | null => {
 
 type PendingItem = TournamentRaw & { hora_str?: string | null };
 
+
+type ImportRow = {
+  id: string;
+  status: string | null;
+  error: string | null;
+  rows_total: number | string | null;
+  rows_processed: number | string | null;
+  original_filename: string | null;
+  created_at: string | null;
+  finished_at: string | null;
+};
+
 const CSVUploader: React.FC<CSVUploaderProps> = ({ datasetId, onDatasetChange, onUploadComplete }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
@@ -40,6 +52,13 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ datasetId, onDatasetChange, o
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [purgeLoading, setPurgeLoading] = useState(false);
   const [showPurgeConfirm, setShowPurgeConfirm] = useState(false);
+  const [importsList, setImportsList] = useState<ImportRow[]>([]);
+  const [importsLoading, setImportsLoading] = useState(false);
+  const [importsError, setImportsError] = useState<string | null>(null);
+  const [reprocessLoadingId, setReprocessLoadingId] = useState<string | null>(null);
+  const [lastImportsRefreshAt, setLastImportsRefreshAt] = useState<number>(0);
+  const [importsExpanded, setImportsExpanded] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // =====================
@@ -50,6 +69,99 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ datasetId, onDatasetChange, o
       return () => clearTimeout(timer);
     }
   }, [successMessage]);
+
+  const loadImports = async () => {
+    try {
+      setImportsLoading(true);
+      setImportsError(null);
+
+      const { data, error } = await supabase
+        .from('imports')
+        .select('id,status,error,rows_total,rows_processed,original_filename,created_at,finished_at')
+        .eq('dataset_id', datasetId)
+        .order('created_at', { ascending: false })
+        .limit(100);
+
+      if (error) {
+        setImportsError(error.message);
+        setImportsList([]);
+        return;
+      }
+
+      setImportsList((data as ImportRow[]) ?? []);
+      setLastImportsRefreshAt(Date.now());
+    } catch (e: any) {
+      setImportsError(e?.message || 'Erro ao carregar imports');
+      setImportsList([]);
+    } finally {
+      setImportsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadImports();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datasetId]);
+
+  useEffect(() => {
+    const hasProcessing = importsList.some((i) => i.status === 'processing');
+    if (!hasProcessing) return;
+
+    const t = setInterval(() => {
+      loadImports();
+    }, 3000);
+
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importsList, datasetId]);
+
+  const doReprocessImport = async (importId: string, replace: boolean) => {
+    try {
+      setReprocessLoadingId(importId + (replace ? ':replace' : ':append'));
+      setImportsError(null);
+
+      // otimista: marca localmente como processing
+      setImportsList((prev) =>
+        prev.map((it) => (it.id === importId ? { ...it, status: 'processing', error: null } : it))
+      );
+
+      const { error } = await supabase.rpc('finalize_import', {
+        p_import_id: importId,
+        p_replace: replace
+      });
+
+      if (error) {
+        setImportsList((prev) =>
+          prev.map((it) => (it.id === importId ? { ...it, status: 'error', error: error.message } : it))
+        );
+        alert(`Erro ao consolidar: ${error.message}`);
+        return;
+      }
+
+      await loadImports();
+      onUploadComplete();
+    } finally {
+      setReprocessLoadingId(null);
+    }
+  };
+
+  const formatDateTime = (iso: string | null) => {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString();
+    } catch {
+      return iso;
+    }
+  };
+
+  const calcProgressPct = (it: ImportRow) => {
+    const total = Number(it.rows_total || 0);
+    const done = Number(it.rows_processed || 0);
+    if (total <= 0) return it.status === 'done' ? 100 : 0;
+    const pct = Math.floor((done / total) * 100);
+    return Math.max(0, Math.min(100, pct));
+  };
 
   const parseCSVRow = (line: string, delimiter: string): string[] => {
     const result: string[] = [];
@@ -236,10 +348,11 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ datasetId, onDatasetChange, o
 
     // ✅ SUBSTITUIR BASE (somente desta aba/dataset): limpa agregado + raw + imports do usuário para o dataset selecionado
     if (!append) {
-      const purgeResp = await supabase.rpc('purge_my_dataset', { p_dataset_id: datasetId });
-      if (purgeResp.error) {
-        console.error('purge_my_dataset ERROR:', purgeResp.error);
-        alert(`Erro ao limpar sua base anterior desta aba: ${purgeResp.error.message}`);
+      try {
+        await purgeDatasetInSteps(datasetId);
+      } catch (e: any) {
+        console.error('purge_my_dataset_step ERROR:', e);
+        alert(`Erro ao limpar sua base anterior desta aba: ${e?.message ?? String(e)}`);
         return;
       }
     }
@@ -318,6 +431,29 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ datasetId, onDatasetChange, o
     setSuccessMessage(`${rows.length} jogos importados com sucesso!`);
   };
 
+  const purgeDatasetInSteps = async (targetDatasetId: number) => {
+    // Purge in small steps to avoid upstream timeouts on very large datasets
+    let safety = 0;
+    while (true) {
+      safety += 1;
+      if (safety > 50000) throw new Error('Purge loop safety stop');
+
+      const { data, error } = await supabase.rpc('purge_my_dataset_step', {
+        p_dataset_id: targetDatasetId,
+        p_batch_raw: 50000,
+      });
+
+      if (error) throw error;
+
+      const row = Array.isArray(data) ? data[0] : (data as any);
+      const done = !!row?.done;
+      if (done) return;
+
+      // small pause so the UI can breathe and to reduce contention
+      await new Promise((r) => setTimeout(r, 120));
+    }
+  };
+
   
   const doPurgeMyData = async () => {
     try {
@@ -331,10 +467,11 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ datasetId, onDatasetChange, o
         return;
       }
 
-      const purgeResp = await supabase.rpc('purge_my_dataset', { p_dataset_id: datasetId });
-      if (purgeResp.error) {
-        console.error('purge_my_dataset ERROR:', purgeResp.error);
-        alert(`Erro ao apagar seus dados: ${purgeResp.error.message}`);
+      try {
+        await purgeDatasetInSteps(datasetId);
+      } catch (e: any) {
+        console.error('purge_my_dataset_step ERROR:', e);
+        alert(`Erro ao apagar seus dados: ${e?.message ?? String(e)}`);
         return;
       }
 
@@ -346,6 +483,7 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ datasetId, onDatasetChange, o
       if (fileInputRef.current) fileInputRef.current.value = '';
 
       setSuccessMessage('Dados apagados com sucesso.');
+      await loadImports();
       onUploadComplete();
     } finally {
       setIsProcessing(false);
@@ -353,8 +491,15 @@ const CSVUploader: React.FC<CSVUploaderProps> = ({ datasetId, onDatasetChange, o
     }
   };
 
+  const processingImport = importsList.find((i) => i.status === 'processing') ?? null;
+  const processingTotal = processingImport ? Number(processingImport.rows_total ?? 0) : 0;
+  const processingDone = processingImport ? Number(processingImport.rows_processed ?? 0) : 0;
+  const processingPct = processingImport && processingTotal > 0
+    ? Math.max(0, Math.min(100, Math.round((processingDone / processingTotal) * 100)))
+    : 0;
+
 return (
-    <div className="flex flex-col md:flex-row items-center gap-6 bg-slate-900/60 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-lg relative">
+    <div className="flex flex-col md:flex-row flex-wrap items-center gap-6 bg-slate-900/60 p-6 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-lg relative">
       <div className="flex-1 text-center">
         <h3 className="text-lg font-black text-white mb-1 flex items-center justify-center gap-2 text-center">
           {isProcessing ? (
@@ -531,6 +676,162 @@ return (
           </div>
         </div>
       )}
+
+      {/* ===================== */}
+      {/* Imports (compacto + painel) */}
+      {/* ===================== */}
+
+      <div className="w-full mt-6">
+        <button
+          type="button"
+          onClick={() => setImportsExpanded((v) => !v)}
+          className="w-full text-left p-3 rounded-2xl border border-slate-800/70 bg-slate-950/40 hover:bg-slate-950/55 transition-all"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-300">
+              {importsExpanded ? 'Ocultar histórico de imports' : 'Ver histórico de imports'}
+            </div>
+
+            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
+              {processingImport
+                ? `Importando ${processingPct}%`
+                : importsList.length > 0
+                  ? `${importsList.length} imports`
+                  : 'Sem imports'}
+            </div>
+          </div>
+
+          <div className="mt-2 h-1.5 w-full rounded-full bg-slate-800/80 overflow-hidden">
+            <div
+              className="h-full bg-blue-500"
+              style={{ width: `${processingImport ? processingPct : 0}%` }}
+            />
+          </div>
+
+          {processingImport ? (
+            <div className="mt-2 text-[10px] text-slate-400">
+              {processingImport.original_filename || 'Import em andamento'} — {processingDone.toLocaleString()} / {processingTotal.toLocaleString()} linhas
+            </div>
+          ) : null}
+        </button>
+      </div>
+
+      {importsExpanded ? (
+      <div className="w-full">
+        <div className="w-full mt-6 p-4 rounded-2xl border border-slate-800 shadow-xl bg-slate-950/60 backdrop-blur-lg">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div className="text-xs font-black text-slate-200 uppercase tracking-[0.18em]">Histórico de Imports</div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={loadImports}
+                disabled={importsLoading || isProcessing}
+                className="px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] border border-slate-800 text-slate-300 hover:text-white hover:border-slate-600 disabled:opacity-50"
+              >
+                {importsLoading ? 'Atualizando...' : 'Atualizar'}
+              </button>
+
+              <div className="text-[10px] text-slate-500">
+                {lastImportsRefreshAt ? `Atualizado: ${new Date(lastImportsRefreshAt).toLocaleTimeString()}` : ''}
+              </div>
+            </div>
+          </div>
+
+          {importsError ? (
+            <div className="text-xs text-red-400 mb-3">{importsError}</div>
+          ) : null}
+
+          <div className="space-y-2 max-h-[360px] overflow-auto pr-1">
+            {importsList.length === 0 ? (
+              <div className="text-xs text-slate-500">Nenhum import encontrado para este dataset.</div>
+            ) : (
+              importsList.map((it) => {
+                const pct = calcProgressPct(it);
+                const isRowProcessing = it.status === 'processing';
+                const isBusy =
+                  isProcessing || isRowProcessing || (reprocessLoadingId ? reprocessLoadingId.startsWith(it.id) : false);
+
+                return (
+                  <div key={it.id} className="p-3 rounded-xl border border-slate-800 bg-slate-900/40">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-xs font-black text-white truncate">
+                          {it.original_filename || 'import.csv'}
+                        </div>
+                        <div className="text-[10px] text-slate-500 truncate">ID: {it.id}</div>
+                        <div className="text-[10px] text-slate-500">
+                          Criado: {formatDateTime(it.created_at)}
+                          {it.finished_at ? ` • Finalizado: ${formatDateTime(it.finished_at)}` : ''}
+                        </div>
+                      </div>
+
+                      <div
+                        className={`shrink-0 px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-[0.2em] border ${
+                          it.status === 'done'
+                            ? 'border-emerald-500/30 text-emerald-300'
+                            : it.status === 'error'
+                            ? 'border-red-500/30 text-red-300'
+                            : it.status === 'processing'
+                            ? 'border-blue-500/30 text-blue-300'
+                            : 'border-slate-700 text-slate-300'
+                        }`}
+                      >
+                        {it.status || 'queued'}
+                      </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 mb-1">
+                        <span>
+                          {Number(it.rows_processed || 0).toLocaleString()} / {Number(it.rows_total || 0).toLocaleString()} linhas
+                        </span>
+                        <span>{pct}%</span>
+                      </div>
+
+                      <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+                        <div
+                          className="h-full bg-blue-600"
+                          style={{ width: `${pct}%`, transition: 'width 250ms linear' }}
+                        />
+                      </div>
+                    </div>
+
+                    {it.status === 'error' && it.error ? (
+                      <div className="mt-3 text-xs text-red-400 whitespace-pre-wrap">{it.error}</div>
+                    ) : null}
+
+                    <div className="mt-3 flex flex-col sm:flex-row gap-2">
+                      <button
+                        onClick={() => doReprocessImport(it.id, false)}
+                        disabled={isBusy}
+                        className="flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] border border-slate-800 text-slate-200 hover:border-slate-600 hover:text-white disabled:opacity-50"
+                      >
+                        Reprocessar
+                      </button>
+
+                      <button
+                        onClick={() => doReprocessImport(it.id, true)}
+                        disabled={isBusy}
+                        className="flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] border border-blue-600/40 text-blue-200 hover:border-blue-500 hover:text-white disabled:opacity-50"
+                      >
+                        Substituir
+                      </button>
+                    </div>
+
+                    {isRowProcessing ? (
+                      <div className="mt-2 text-[10px] text-blue-300">
+                        Consolidando... (a lista atualiza automaticamente)
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </div>
+      ) : null}
+
     </div>
   );
 };

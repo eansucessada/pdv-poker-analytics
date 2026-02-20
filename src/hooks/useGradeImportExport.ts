@@ -3,7 +3,16 @@ import { useRef, useState } from 'react';
 import type { CachedTournamentData, GradeConfig, GradeSlot } from '../types/grade';
 import { makeTournamentKey } from './../utils/tournamentKey';
 
-import { DEFAULT_GRADE_CONFIG, normalizeConfig } from './useGradeSlots';
+// Não exportamos/importamos filtros; mantemos a lógica toda aqui.
+
+const IMPORT_ONLY_SENTINEL = '__GRADE_IMPORT_ONLY__';
+
+type PendingImportData = {
+  manualTimes: Record<string, string>;
+  manuallyAddedKeys: string[];
+  statsCache: Record<string, CachedTournamentData>;
+  filesCount: number;
+};
 
 export const useGradeImportExport = (args: {
   activeSlot: GradeSlot;
@@ -11,56 +20,55 @@ export const useGradeImportExport = (args: {
   setPendingConfig: (cfg: GradeConfig) => void;
   setAppliedConfig: (cfg: GradeConfig) => void;
 }) => {
-  const { activeSlot, updateActiveSlot, setPendingConfig, setAppliedConfig } = args;
+  const { activeSlot, updateActiveSlot } = args;
 
   const importInputRef = useRef<HTMLInputElement>(null);
 
   const [showImportOptions, setShowImportOptions] = useState(false);
-  const [pendingImportData, setPendingImportData] = useState<{
-    manualTimes: Record<string, string>;
-    manuallyAddedKeys: string[];
-    excludedKeys: string[];
-    statsCache: Record<string, CachedTournamentData>;
-    config: GradeConfig;
-    days: number[];
-    filesCount: number;
-  } | null>(null);
+  const [pendingImportData, setPendingImportData] = useState<PendingImportData | null>(null);
 
-  const handleExportGrade = (gradeData: any[], alertsEnabled: boolean, grindMode: boolean, alertVolume: number) => {
-    const currentStatsCache: Record<string, CachedTournamentData> = { ...activeSlot.statsCache };
+  /**
+   * EXPORT (schema v3):
+   * - arquivo independente do CSV / Supabase
+   * - contém SOMENTE os torneios exibidos (snapshot completo)
+   * - não inclui filtros/config/dias/exclusões
+   */
+  const handleExportGrade = (gradeData: any[]) => {
+    const tournaments: CachedTournamentData[] = (gradeData ?? []).map((item: any) => {
+      const nome = String(item?.nome ?? '').trim();
+      const rede = String(item?.rede ?? '').trim() || 'Manual';
+      const key = String(item?.tournamentKey ?? item?.key ?? '').trim() || makeTournamentKey(rede, nome);
+      const horario = String(item?.horarioManual || item?.horario || '00:00').slice(0, 5);
 
-    gradeData.forEach((item: any) => {
-      currentStatsCache[item.tournamentKey] = {
-        key: item.tournamentKey,
-        nome: item.nome,
-        stakeMedia: item.stakeMedia,
-        roiTotal: item.roiTotal,
-        qtd: item.qtd,
-        rede: item.rede,
-        velocidadePredominante: item.velocidadePredominante,
-        mediaParticipantes: item.mediaParticipantes,
-        horario: item.horario || '--:--',
-        bandeiras: item.bandeiras || '',
-        isFullyManual: item.isFullyManual
+      return {
+        key,
+        nome,
+        rede,
+        horario,
+        stakeMedia: Number(item?.stakeMedia ?? 0),
+        roiTotal: Number(item?.roiTotal ?? 0),
+        qtd: Number(item?.qtd ?? 0),
+        velocidadePredominante: String(item?.velocidadePredominante ?? 'Normal'),
+        mediaParticipantes: Number(item?.mediaParticipantes ?? 0),
+        bandeiras: String(item?.bandeiras ?? ''),
+        // Importado = "pinado" (bypass filtros numéricos no GradeView)
+        isFullyManual: true
       };
     });
 
     const dataToExport = {
-      slot: {
-        ...activeSlot,
-        statsCache: currentStatsCache
-      },
-      alertVolume,
-      alertsEnabled,
-      grindMode,
-      schemaVersion: 2
+      schemaVersion: 3,
+      exportedAt: new Date().toISOString(),
+      tournaments
     };
 
     const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `poker-grade-${activeSlot.name.replace(/\s+/g, '-').toLowerCase()}-${new Date().toISOString().split('T')[0]}.json`;
+    link.download = `poker-grade-tournaments-${String(activeSlot?.name ?? 'grade')
+      .replace(/\s+/g, '-')
+      .toLowerCase()}-${new Date().toISOString().split('T')[0]}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -70,82 +78,101 @@ export const useGradeImportExport = (args: {
     if (!files || files.length === 0) return;
 
     let importedManualTimes: Record<string, string> = {};
-    let importedManuallyAddedKeys: Set<string> = new Set();
-    let importedExcludedKeys: Set<string> = new Set();
-    let importedStats: Record<string, CachedTournamentData> = {};
-    let importedConfig: GradeConfig = { ...DEFAULT_GRADE_CONFIG };
-    let importedDays: number[] = [];
+    const importedManuallyAddedKeys: Set<string> = new Set();
+    const importedStats: Record<string, CachedTournamentData> = {};
     let filesCount = 0;
+
+    // helper: converte formatos antigos/variados para o padrão "rede::nome"
+    const toTournamentKey = (value: string, fallbackRede = 'Manual', fallbackNome = '') => {
+      const raw = String(value || '').trim();
+      if (!raw) return makeTournamentKey(fallbackRede, fallbackNome);
+      if (raw.includes('::')) return raw;
+      if (raw.includes('||')) {
+        const [nome, rede] = raw.split('||');
+        return makeTournamentKey((rede || fallbackRede).trim(), (nome || fallbackNome).trim());
+      }
+      // se vier só o nome
+      return makeTournamentKey(fallbackRede, raw);
+    };
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       try {
         const text = await file.text();
         const json = JSON.parse(text);
+        filesCount++;
 
+        // ✅ NOVO: schema v3 (independente)
+        if (Number(json?.schemaVersion) >= 3 && Array.isArray(json?.tournaments)) {
+          (json.tournaments as any[]).forEach((t) => {
+            const nome = String(t?.nome ?? '').trim();
+            const rede = String(t?.rede ?? 'Manual').trim() || 'Manual';
+            const key = toTournamentKey(String(t?.key ?? ''), rede, nome);
+            const horario = String(t?.horario ?? '00:00').slice(0, 5);
+
+            importedManuallyAddedKeys.add(key);
+            importedManualTimes[key] = horario;
+
+            importedStats[key] = {
+              key,
+              nome,
+              rede,
+              horario,
+              stakeMedia: Number(t?.stakeMedia ?? 0),
+              roiTotal: Number(t?.roiTotal ?? 0),
+              qtd: Number(t?.qtd ?? 0),
+              velocidadePredominante: String(t?.velocidadePredominante ?? 'Normal'),
+              mediaParticipantes: Number(t?.mediaParticipantes ?? 0),
+              bandeiras: String(t?.bandeiras ?? ''),
+              isFullyManual: true
+            };
+          });
+          continue;
+        }
+
+        // ✅ COMPAT: schema antigo com slot completo
+        // OBS: ignoramos config/dias/excluídos — import/export agora é só torneios.
         const incomingSlot = json.slot || (json.slots ? json.slots[0] : null);
         if (!incomingSlot) continue;
 
-        filesCount++;
+        // manualTimes
+        const incomingManualTimes = incomingSlot.manualTimes || {};
+        Object.entries(incomingManualTimes).forEach(([k, v]) => {
+          const nk = toTournamentKey(k, 'Manual');
+          importedManualTimes[nk] = String(v || '').slice(0, 5);
+        });
 
-// helper local: converte formatos antigos/variados para o padrão "rede::nome"
-const toTournamentKey = (value: string, fallbackRede = 'Manual') => {
-  const raw = String(value || '').trim();
+        // manuallyAddedKeys (ou compat names)
+        const incomingManuallyAddedKeys: string[] =
+          incomingSlot.manuallyAddedKeys ||
+          (incomingSlot.manuallyAddedNames
+            ? (incomingSlot.manuallyAddedNames as string[]).map((n: string) => makeTournamentKey('Manual', n))
+            : []);
 
-  // já está no padrão novo
-  if (raw.includes('::')) return raw;
+        incomingManuallyAddedKeys
+          .map((k) => toTournamentKey(k, 'Manual'))
+          .forEach((k) => importedManuallyAddedKeys.add(k));
 
-  // formato antigo encontrado no seu arquivo (nome||rede)
-  if (raw.includes('||')) {
-    const [nome, rede] = raw.split('||');
-    return makeTournamentKey((rede || fallbackRede).trim(), (nome || '').trim());
-  }
+        // statsCache
+        if (incomingSlot.statsCache) {
+          Object.entries(incomingSlot.statsCache).forEach(([k, val]) => {
+            const v: any = val as any;
+            const nk = toTournamentKey(k, v?.rede || 'Manual', v?.nome || '');
 
-  // se vier só o nome
-  return makeTournamentKey(fallbackRede, raw);
-};
+            importedStats[nk] = {
+              ...(v ?? {}),
+              key: nk,
+              rede: v?.rede || 'Manual',
+              nome: v?.nome || '',
+              // garante independência
+              isFullyManual: true
+            };
 
-// manualTimes
-const incomingManualTimes = incomingSlot.manualTimes || {};
-Object.entries(incomingManualTimes).forEach(([k, v]) => {
-  const nk = toTournamentKey(k, 'Manual');
-  importedManualTimes[nk] = String(v || '').slice(0, 5);
-});
-
-// compat manuallyAddedNames/excludedNames
-const incomingManuallyAddedKeys: string[] =
-  incomingSlot.manuallyAddedKeys ||
-  (incomingSlot.manuallyAddedNames
-    ? (incomingSlot.manuallyAddedNames as string[]).map((n: string) => makeTournamentKey('Manual', n))
-    : []);
-
-const incomingExcludedKeys: string[] =
-  incomingSlot.excludedKeys ||
-  (incomingSlot.excludedNames
-    ? (incomingSlot.excludedNames as string[]).map((n: string) => makeTournamentKey('Manual', n))
-    : []);
-
-// aqui pode vir key já no formato novo OU no formato antigo "nome||rede"
-incomingManuallyAddedKeys.map(k => toTournamentKey(k, 'Manual')).forEach(k => importedManuallyAddedKeys.add(k));
-incomingExcludedKeys.map(k => toTournamentKey(k, 'Manual')).forEach(k => importedExcludedKeys.add(k));
-
-// statsCache
-if (incomingSlot.statsCache) {
-  Object.entries(incomingSlot.statsCache).forEach(([k, val]) => {
-    const nk = toTournamentKey(k, 'Manual');
-    importedStats[nk] = {
-      ...(val as any),
-      key: nk,
-      rede: (val as any).rede || 'Manual',
-      nome: (val as any).nome || ''
-    };
-  });
-}
-
-
-        // config/days
-        if (incomingSlot.config) importedConfig = normalizeConfig(incomingSlot.config);
-        if (incomingSlot.days) importedDays = incomingSlot.days;
+            if (!importedManualTimes[nk] && v?.horario) {
+              importedManualTimes[nk] = String(v.horario).slice(0, 5);
+            }
+          });
+        }
       } catch (err) {
         console.error(`Erro ao processar arquivo ${file.name}:`, err);
       }
@@ -154,10 +181,7 @@ if (incomingSlot.statsCache) {
     setPendingImportData({
       manualTimes: importedManualTimes,
       manuallyAddedKeys: Array.from(importedManuallyAddedKeys),
-      excludedKeys: Array.from(importedExcludedKeys),
       statsCache: importedStats,
-      config: importedConfig || { ...DEFAULT_GRADE_CONFIG },
-      days: importedDays,
       filesCount
     });
 
@@ -166,37 +190,34 @@ if (incomingSlot.statsCache) {
     if (importInputRef.current) importInputRef.current.value = '';
   };
 
+  /**
+   * CONFIRM IMPORT
+   * - append: adiciona torneios no slot atual SEM mexer em filtros/config/dias/exclusões
+   * - replace: substitui SOMENTE a lista de torneios (manuais + cache) SEM mexer em filtros
+   */
   const confirmImport = (append: boolean) => {
     if (!pendingImportData) return;
 
     if (append) {
       const mergedManualTimes = { ...activeSlot.manualTimes, ...pendingImportData.manualTimes };
-      const mergedManuallyAdded = Array.from(new Set([...activeSlot.manuallyAddedKeys, ...pendingImportData.manuallyAddedKeys]));
-      const mergedExcluded = Array.from(new Set([...activeSlot.excludedKeys, ...pendingImportData.excludedKeys]));
-      const mergedStatsCache = { ...activeSlot.statsCache, ...pendingImportData.statsCache };
+      const mergedManuallyAdded = Array.from(
+        new Set([...(activeSlot.manuallyAddedKeys ?? []), ...(pendingImportData.manuallyAddedKeys ?? [])])
+      );
+      const mergedStatsCache = { ...(activeSlot.statsCache ?? {}), ...(pendingImportData.statsCache ?? {}) };
 
       updateActiveSlot({
         manualTimes: mergedManualTimes,
         manuallyAddedKeys: mergedManuallyAdded,
-        excludedKeys: mergedExcluded,
-        statsCache: mergedStatsCache,
-        config: pendingImportData.config
+        statsCache: mergedStatsCache
       });
-
-      setPendingConfig(pendingImportData.config);
-      setAppliedConfig(pendingImportData.config);
     } else {
       updateActiveSlot({
         manualTimes: pendingImportData.manualTimes,
         manuallyAddedKeys: pendingImportData.manuallyAddedKeys,
-        excludedKeys: pendingImportData.excludedKeys,
         statsCache: pendingImportData.statsCache,
-        config: pendingImportData.config,
-        days: pendingImportData.days.length > 0 ? pendingImportData.days : activeSlot.days
+        // ✅ modo "substituir": exibir APENAS importados (independente dos filtros)
+        excludedKeys: Array.from(new Set([...(activeSlot.excludedKeys ?? []), IMPORT_ONLY_SENTINEL]))
       });
-
-      setPendingConfig(pendingImportData.config);
-      setAppliedConfig(pendingImportData.config);
     }
 
     setShowImportOptions(false);

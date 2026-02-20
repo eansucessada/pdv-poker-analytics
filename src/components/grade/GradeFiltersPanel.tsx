@@ -12,11 +12,13 @@ const EXCLUDE_SUGGESTIONS = [
   'Deepstack',
   'Seats',
   'Daily',
-  'Mini',
   '6-Max',
-  '7-Max',
-  'Rebuy'
-];
+  'Sat',
+  'Tickets',
+  '5x'
+]
+
+;
 
 interface Props {
   pendingConfig: GradeConfig;

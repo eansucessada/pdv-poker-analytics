@@ -18,7 +18,8 @@ const App: React.FC = () => {
   const [datasetId, setDatasetId] = useState<number>(1);
 
   // Filters globais (mantém comportamento atual do app)
-  const [filters] = useState<FilterState>({});
+  // (não usamos filtros globais aqui, mas alguns componentes esperam o tipo)
+  const filters = useMemo<FilterState>(() => ({} as FilterState), []);
 
   // DeepDive: filtros do Explain/Chart (mantém como estava)
   const [metricFilter] = useState<MetricFilter>(INITIAL_METRIC_FILTER);
@@ -30,7 +31,7 @@ const App: React.FC = () => {
   const onUploadComplete = () => setDataVersion((v) => v + 1);
 
   // Compat: alguns componentes esperam arrays memoizados
-  const memoFilters = useMemo(() => filters, [filters]);
+  const memoFilters = filters;
 
   return (
     <AuthGate>

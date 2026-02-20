@@ -1,10 +1,10 @@
 // grade/GradeView.tsx
+
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { FilterState } from '../../types/common';
 import type { GradeConfig, GradeViewProps } from '../../types/grade';
 import { useGradeSlots, DEFAULT_GRADE_CONFIG } from '../../hooks/useGradeSlots';
 import { useGradeData } from '../../hooks/useGradeData';
-import { useDatasetCounts } from '../../hooks/useDatasetCounts';
 import { useGradeImportExport } from '../../hooks/useGradeImportExport';
 import { useGradeAlerts } from '../../hooks/useGradeAlerts';
 import { getHHMM, subtractMinutes } from '../../utils/time';
@@ -16,6 +16,8 @@ import GradeTable from './GradeTable';
 import GradeManualAdd from './GradeManualAdd';
 import GradeManualModal from './GradeManualModal';
 import GradeImportModal from './GradeImportModal';
+
+const IMPORT_ONLY_SENTINEL = '__GRADE_IMPORT_ONLY__';
 
 const ALERT_SOUND_URL = 'https://assets.mixkit.co/active_storage/sfx/951/951-preview.mp3';
 
@@ -104,6 +106,129 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSlotId]);
 
+  // =====================================================
+  // Persistência (F5 + troca de aba)
+  // - Salva por dataset + slot
+  // - Restaura slot ativo + config + toggles
+  // =====================================================
+  // Importante: só persistir/restaurar quando datasetId estiver definido
+  const STORAGE_KEY = useMemo(() => `pdv_grade_state_v2:${datasetId ?? 'unknown'}`, [datasetId]);
+  const didRestoreRef = useRef(false);
+  const [hasRestored, setHasRestored] = useState(false);
+
+  function safeParseJSON<T>(value: string | null): T | null {
+    if (!value) return null;
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  useEffect(() => {
+    // ao trocar dataset, permite restore novamente
+    didRestoreRef.current = false;
+    setHasRestored(false);
+  }, [datasetId]);
+
+  // restaura o slot ativo (se existir) e seu config
+  useEffect(() => {
+    if (datasetId == null) return;
+    if (didRestoreRef.current) return;
+
+    const saved = safeParseJSON<any>(localStorage.getItem(STORAGE_KEY));
+    if (!saved) {
+      didRestoreRef.current = true;
+      setHasRestored(true);
+      return;
+    }
+
+    // tenta restaurar slot selecionado
+    if (saved.activeSlotId && saved.activeSlotId !== activeSlotId) {
+      const exists = (slots ?? []).some((s: any) => s.id === saved.activeSlotId);
+      if (exists) {
+        switchSlot(saved.activeSlotId);
+        // aguarda o activeSlotId mudar para aplicar config
+        return;
+      }
+    }
+
+    const slotState = saved.slots?.[activeSlotId];
+    if (slotState) {
+      const restoredConfig = (slotState.config ?? activeSlot.config) as GradeConfig;
+
+      updateActiveSlot({
+        config: restoredConfig,
+        excludedKeys: slotState.excludedKeys ?? activeSlot.excludedKeys,
+        manuallyAddedKeys: slotState.manuallyAddedKeys ?? activeSlot.manuallyAddedKeys,
+        manualTimes: slotState.manualTimes ?? activeSlot.manualTimes,
+        days: slotState.days ?? activeSlot.days,
+        name: slotState.name ?? activeSlot.name,
+        statsCache: slotState.statsCache ?? activeSlot.statsCache
+      } as any);
+
+      setPendingConfig(restoredConfig);
+      setAppliedConfig(restoredConfig);
+    }
+
+    if (typeof saved.grindMode === 'boolean') setGrindMode(saved.grindMode);
+    if (typeof saved.alertsEnabled === 'boolean') setAlertsEnabled(saved.alertsEnabled);
+    if (typeof saved.alertVolume === 'number') setAlertVolume(saved.alertVolume);
+
+    didRestoreRef.current = true;
+    setHasRestored(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [STORAGE_KEY, slots, activeSlotId]);
+
+  // salva sempre que o slot ou config mudar
+  useEffect(() => {
+    if (datasetId == null) return;
+    // Não sobrescrever o storage com defaults antes de restaurar
+    if (!hasRestored) return;
+    const existing = safeParseJSON<any>(localStorage.getItem(STORAGE_KEY)) ?? {};
+    const next = {
+      ...existing,
+      activeSlotId,
+      grindMode,
+      alertsEnabled,
+      alertVolume,
+      slots: {
+        ...(existing.slots ?? {}),
+        [activeSlotId]: {
+          id: activeSlotId,
+          name: activeSlot.name,
+          config: activeSlot.config,
+          excludedKeys: activeSlot.excludedKeys,
+          manuallyAddedKeys: activeSlot.manuallyAddedKeys,
+          manualTimes: activeSlot.manualTimes,
+          days: activeSlot.days,
+          statsCache: activeSlot.statsCache
+        }
+      }
+    };
+
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }, [
+    STORAGE_KEY,
+    datasetId,
+    hasRestored,
+    activeSlotId,
+    activeSlot.name,
+    activeSlot.config,
+    activeSlot.excludedKeys,
+    activeSlot.manuallyAddedKeys,
+    activeSlot.manualTimes,
+    activeSlot.days,
+    activeSlot.statsCache,
+    grindMode,
+    alertsEnabled,
+    alertVolume
+  ]);
+
   const applyFilters = () => {
     const finalConfig = {
       ...pendingConfig,
@@ -143,8 +268,6 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
 
   // data (pool base vindo do Supabase)
   const { gradeItems: baseGradeItems = [], items: fullGradeDataPool = [], allRedes, uniqueVelocidades, loading, ready, error } = useGradeData(datasetId, dataVersion);
-
-  const { raw: datasetRawCount, unique: datasetUniqueCount, loading: datasetCountsLoading } = useDatasetCounts(datasetId, dataVersion);
 
   // =====================
   // Aplicar configuração da Grade (filtros + exclusões + manuais)
@@ -212,7 +335,7 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
         stakeMedia: toNum(it?.stakeMedia ?? it?.avg_stake ?? it?.avgStake),
         qtd: toNum(it?.qtd ?? it?.games_count ?? it?.gamesCount),
         roiTotal: toNum(it?.roiTotal ?? it?.roi_total_pct ?? it?.roiTotalPct),
-        roiMedio: toNum(it?.roiMedio ?? it?.roi_total_pct ?? it?.roiTotalPct ?? it?.roi_avg_pct ?? it?.roiAvgPct),
+        roiMedio: toNum(it?.roiMedio ?? it?.roi_avg_pct ?? it?.roiAvgPct ?? it?.roi_total_pct),
         retornoTotal: toNum(it?.retornoTotal ?? it?.total_profit ?? it?.totalProfit),
         itm: toNum(it?.itm ?? it?.itm_count ?? it?.itmCount),
         itmPercentual: toNum(it?.itmPercentual ?? it?.itm_pct ?? it?.itmPct),
@@ -230,11 +353,15 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
     };
 
     // 1) Base items do Supabase (enriquecer com horarioManual)
+    const importOnlyMode = excludedKeys.has(IMPORT_ONLY_SENTINEL) && (activeSlot.manuallyAddedKeys ?? []).length > 0;
+    const importOnlySet = importOnlyMode ? new Set(activeSlot.manuallyAddedKeys ?? []) : null;
+
     const byKey = new Map<string, any>();
     (baseGradeItems ?? []).forEach((it: any) => {
       const norm = normalizeBaseItem(it);
       const k = String(norm.tournamentKey ?? '');
       if (!k) return;
+      if (importOnlyMode && importOnlySet && !importOnlySet.has(k)) return;
       const horarioManual = activeSlot.manualTimes?.[k] ?? '';
       byKey.set(k, { ...norm, horarioManual, isFullyManual: false, isFromCache: false });
     });
@@ -270,15 +397,21 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
         }
       } else {
         const prev = byKey.get(k);
-        byKey.set(k, { ...prev, isFullyManual: prev?.isFullyManual ?? false });
+        // Se o torneio já existe no Supabase, mas está "pinado" (manuallyAddedKeys),
+        // ele deve permanecer na grade independentemente dos filtros numéricos.
+        // Usamos isFullyManual como flag de pin.
+        byKey.set(k, { ...prev, isFullyManual: true });
       }
     });
 
     // 3) Aplicar filtros
     let list = Array.from(byKey.values());
 
-    // removidos no lixo
+    // removidos no lixo (manual do usuário)
     list = list.filter((it: any) => !excludedKeys.has(String(it.tournamentKey)));
+
+    // ✅ modo "substituir": mostrar somente importados, independente dos filtros da página
+    if (!importOnlyMode) {
 
     // excluídos por termos
     if (excludeTerms.length > 0) {
@@ -325,6 +458,8 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
       return true;
     });
 
+    }
+
     // ordenar por horário
     list.sort((a: any, b: any) => {
       const ta = normTime(String(a.horarioManual || a.horario || '00:00'));
@@ -342,12 +477,6 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
     activeSlot.manualTimes,
     activeSlot.statsCache
   ]);
-
-  const filtroBrutos = useMemo(() => {
-    return gradeData.reduce((acc: number, r: any) => acc + (Number.isFinite(r.games_count) ? r.games_count : 0), 0);
-  }, [gradeData]);
-
-  const filtroUnicos = useMemo(() => gradeData.length, [gradeData]);
 
   // alerts
   useGradeAlerts({
@@ -444,6 +573,21 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
     setShowManualSuggestions(false);
     setManualSearch('');
   };
+
+  const startManualCustomTournamentAddition = (nameRaw: string) => {
+    const name = (nameRaw || '').trim();
+    if (!name) return;
+
+    setPendingTournamentName(name);
+    setPendingTournamentRede(''); // rede opcional
+    setPendingTournamentTime('');
+    setPendingTournamentField('');
+    setPendingTournamentSpeed('Normal');
+    setIsManualModalOpen(true);
+    setShowManualSuggestions(false);
+    setManualSearch('');
+  };
+
 
   const startManualTournamentAdditionCustom = (name: string) => {
     const rede = pendingTournamentRede || 'GGNetwork';
@@ -557,42 +701,7 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
         onCancel={() => setShowImportOptions(false)}
       />
 
-      
-      <div className="bg-slate-800/40 border border-slate-800/60 rounded-[2rem] p-6 shadow-lg">
-        <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3 text-center">Torneios Totais</div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          <div className="text-center">
-            <div className="text-[9px] text-slate-500 font-black uppercase tracking-widest mb-2">Dataset</div>
-            <div className="flex items-end justify-center gap-6">
-              <div className="flex flex-col items-center">
-                <span className="text-3xl font-black text-white">{datasetCountsLoading ? "…" : datasetRawCount}</span>
-                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Brutos</span>
-              </div>
-              <div className="flex flex-col items-center">
-                <span className="text-2xl font-black text-slate-300">{datasetCountsLoading ? "…" : datasetUniqueCount}</span>
-                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Únicos</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="text-center">
-            <div className="text-[9px] text-slate-500 font-black uppercase tracking-widest mb-2">Filtro</div>
-            <div className="flex items-end justify-center gap-6">
-              <div className="flex flex-col items-center">
-                <span className="text-3xl font-black text-white">{filtroBrutos}</span>
-                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Brutos</span>
-              </div>
-              <div className="flex flex-col items-center">
-                <span className="text-2xl font-black text-slate-300">{filtroUnicos}</span>
-                <span className="text-[9px] text-slate-600 font-bold uppercase tracking-widest mt-2">Únicos</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-<GradeHeader
+      <GradeHeader
         slots={slots}
         activeSlotId={activeSlotId}
         activeSlot={activeSlot}
@@ -600,7 +709,7 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
         onAddSlot={addSlot}
         onRemoveSlot={(id) => removeSlot(id)}
         onToggleDay={toggleDay}
-        onExport={() => handleExportGrade(gradeData, alertsEnabled, grindMode, alertVolume)}
+        onExport={() => handleExportGrade(gradeData)}
         onImport={handleImportGrade}
         importInputRef={importInputRef}
         alertsEnabled={alertsEnabled}
@@ -642,6 +751,85 @@ const GradeView: React.FC<GradeViewProps> = ({ dataVersion, datasetId, filters }
         onManualTimeCommit={handleManualTimeCommit}
         onRemove={handleRemoveTournament}
       />
+
+      {/* Pesquisar ou adicionar torneios (fica no fim da página) */}
+      <div className="mt-4">
+        <div className="rounded-3xl border border-slate-800/70 bg-slate-950/30 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
+          <div className="text-[10px] uppercase tracking-[0.25em] text-slate-300/60 font-black mb-3">
+            Pesquisar ou Adicionar
+          </div>
+
+          <div className="relative">
+            <input
+              className="w-full rounded-2xl bg-slate-950/60 border border-slate-800/70 px-4 py-3 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-700/60"
+              placeholder="Pesquisar ou Adicionar... Você pode adicionar qualquer torneio, mesmo fora do CSV"
+              value={manualSearch}
+              onChange={handleManualSearchChange}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  if (!showManualSuggestions) setShowManualSuggestions(true);
+                  setActiveSuggestionIdx((v) => Math.min(v + 1, manualSuggestions.length - 1));
+                } else if (e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setActiveSuggestionIdx((v) => Math.max(v - 1, 0));
+                } else if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (showManualSuggestions && manualSuggestions[activeSuggestionIdx]) {
+                    startManualTournamentAdditionFromPair(manualSuggestions[activeSuggestionIdx]);
+                  } else {
+                    startManualCustomTournamentAddition(manualSearch);
+                  }
+                } else if (e.key === 'Escape') {
+                  setShowManualSuggestions(false);
+                }
+              }}
+              onFocus={() => {
+                if (manualSearch.trim()) setShowManualSuggestions(true);
+              }}
+            />
+
+            {showManualSuggestions && manualSearch.trim() && (
+              <div className="absolute z-30 mt-2 w-full overflow-hidden rounded-2xl border border-slate-800/70 bg-slate-950/95 shadow-xl">
+                <button
+                  type="button"
+                  className="w-full text-left px-4 py-3 text-sm text-slate-200 hover:bg-slate-900/60"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => startManualCustomTournamentAddition(manualSearch)}
+                >
+                  + Adicionar torneio personalizado: <span className="font-black">{manualSearch.trim()}</span>
+                </button>
+
+                {manualSuggestions.length > 0 && (
+                  <div className="border-t border-slate-800/70" />
+                )}
+
+                {manualSuggestions.map((sug, idx) => (
+                  <button
+                    key={sug.key}
+                    type="button"
+                    className={
+                      'w-full text-left px-4 py-3 text-sm hover:bg-slate-900/60 ' +
+                      (idx === activeSuggestionIdx ? 'bg-slate-900/60 text-slate-100' : 'text-slate-200')
+                    }
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={() => setActiveSuggestionIdx(idx)}
+                    onClick={() => startManualTournamentAdditionFromPair(sug)}
+                  >
+                    <div className="font-black">{sug.nome}</div>
+                    <div className="text-[11px] text-slate-400">{sug.rede}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 text-xs text-slate-500">
+            Dica: para torneio personalizado, o horário é obrigatório (você vai preencher no próximo passo).
+          </div>
+        </div>
+      </div>
+
     </div>
   );
 };
